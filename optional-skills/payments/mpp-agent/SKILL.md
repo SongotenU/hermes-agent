@@ -8,7 +8,7 @@ platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Payments, MPP, HTTP-402, Tempo, Stripe]
-    related_skills: [stripe-link-cli, stripe-projects, payments]
+    related_skills: [stripe-link-cli, stripe-projects]
 ---
 
 # MPP Agent Skill

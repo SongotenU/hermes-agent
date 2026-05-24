@@ -8,7 +8,7 @@ platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Payments, Stripe, Projects, Provisioning, Infrastructure]
-    related_skills: [stripe-link-cli, mpp-agent, payments]
+    related_skills: [stripe-link-cli, mpp-agent]
 ---
 
 # Stripe Projects Skill
