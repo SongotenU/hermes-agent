@@ -2213,6 +2213,20 @@ class ContextCompressor(ContextEngine):
         cooldown_until = time.time() + cooldown_seconds
         self._summary_failure_cooldown_until = time.monotonic() + cooldown_seconds
         self._last_summary_error = error
+        # Circuit breaker increment (R2.1). Quota/auth/rate errors trip in one
+        # shot (R2.5): detect via the error classifier that already imports at
+        # the failure site. We reuse the same auth/quota signal the codebase
+        # already checks (see lines ~57-75, _is_summary_access_or_quota_error).
+        _err_text = error or ""
+        _is_quota_or_auth = (
+            _is_summary_access_or_quota_error(Exception(_err_text))
+            if _err_text
+            else False
+        )
+        if _is_quota_or_auth:
+            self._consecutive_summary_failures += self._breaker_max_consecutive
+        else:
+            self._consecutive_summary_failures += 1
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -2274,6 +2288,11 @@ class ContextCompressor(ContextEngine):
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
         self._cooldown_persist_failed = False
+        # Circuit breaker reset (R2.3a): cooldown cleared means we got a clean
+        # shot (success, manual retry, or fresh session) — wipe the consecutive
+        # failure counter too so the breaker re-arms.
+        self._consecutive_summary_failures = 0
+        self._breaker_tripped_logged = False
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -2712,6 +2731,23 @@ class ContextCompressor(ContextEngine):
         # this flag to know "compression was attempted but aborted, freeze
         # the chat until the user manually retries via /compress".
         self._last_compress_aborted: bool = False
+        # Compaction circuit breaker (Claude Code AutoCompactTrackingState port):
+        # terminal for the session — once max consecutive summary failures hit,
+        # compress() short-circuits BEFORE any summary LLM call to avoid burning
+        # paid attempts on irrecoverable context (prompt_too_long / broken cred).
+        # Per-instance; reset on successful summary or manual /compress.
+        self._consecutive_summary_failures: int = 0
+        self._breaker_tripped_logged: bool = False
+        self._breaker_enabled: bool = True
+        self._breaker_max_consecutive: int = 3
+        try:
+            from hermes_cli.config import load_config as _load_config
+
+            _cb_cfg = ((_load_config() or {}).get("agent", {}).get("compaction", {})) or {}
+            self._breaker_enabled = bool(_cb_cfg.get("circuit_breaker_enabled", True))
+            self._breaker_max_consecutive = int(_cb_cfg.get("max_consecutive_failures", 3))
+        except Exception:
+            pass
         # Set True when the summary call failed with an authentication /
         # permission error (HTTP 401/403). Auth failures are non-recoverable
         # at the request level — the credential or endpoint is broken — so
@@ -3048,6 +3084,24 @@ class ContextCompressor(ContextEngine):
         # than persisted at trip time: a fresh process that loads a durable
         # tripped counter (#69872) therefore starts a full window blocked,
         # preserving the restart-must-not-disarm contract (#54923).
+        # Circuit breaker (R2.2): terminal for the session — trip when
+        # consecutive summary failures exceed the configured max so compress()
+        # short-circuits BEFORE any summary LLM call. No cooldown timer (the
+        # breaker is session-terminal); resets on success/manual /compress.
+        if (
+            self._breaker_enabled
+            and self._consecutive_summary_failures >= self._breaker_max_consecutive
+        ):
+            if not self._breaker_tripped_logged:
+                logger.warning(
+                    "Compaction circuit breaker OPEN after %d consecutive summary "
+                    "failures — session frozen until /new or manual /compress.",
+                    self._consecutive_summary_failures,
+                )
+                self._breaker_tripped_logged = True
+            self._last_compress_aborted = True
+            return True
+        # Anti-thrashing: back off if recent compressions were ineffective
         if (
             self._ineffective_compression_count >= 2
             or self._fallback_compression_streak >= 2
