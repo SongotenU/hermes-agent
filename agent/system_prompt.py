@@ -203,6 +203,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
+    # Phase 4: per-role agent definition body (appended after identity, before
+    # behavioral guidance).  Only present when delegate_task applied a definition.
+    _agent_def_body = getattr(agent, "_agent_definition_body", None)
+    if _agent_def_body:
+        stable_parts.append(_agent_def_body)
+
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
     # this targets (stopping after a stub; fabricating output when a real

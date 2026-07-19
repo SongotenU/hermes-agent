@@ -1431,6 +1431,39 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
+def _apply_agent_definition(child, role_name: str, parent_agent) -> None:
+    """Apply agent definition (toolsets, model, body) to a child agent (Phase 4).
+
+    Loads the agent definition for ``role_name`` and applies:
+    - body → child._agent_definition_body (read by system_prompt.py)
+    - toolsets → restrict child's enabled_toolsets (intersection with parent's)
+    - model → override child's model
+
+    If no definition is found, does nothing (R8.2 fallback).
+    """
+    try:
+        from agent.agent_definition import get_loader
+        loader = get_loader()
+        definition = loader.load(role_name)
+    except Exception as exc:
+        logger.debug("agent_definition: load failed for %r: %s", role_name, exc)
+        return
+
+    if definition is None:
+        return
+
+    child._agent_definition_body = definition.body
+
+    if definition.toolsets:
+        parent_toolsets = set(getattr(parent_agent, "enabled_toolsets", []) or [])
+        restricted = list(parent_toolsets & set(definition.toolsets))
+        if restricted:
+            child.enabled_toolsets = restricted
+
+    if definition.model:
+        child.model = definition.model
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -3702,6 +3735,7 @@ def delegate_task(
                 child._fork_parent_messages = list(
                     getattr(parent_agent, "_session_messages", [])
                 )
+            _apply_agent_definition(child, effective_role, parent_agent)
             children.append((i, t, child))
     finally:
         # Clean up the worktree created for this delegation call (if any).
