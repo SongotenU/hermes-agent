@@ -1463,6 +1463,27 @@ def _apply_agent_definition(child, role_name: str, parent_agent) -> None:
     if definition.model:
         child.model = definition.model
 
+    # Phase 5 — per-agent MCP servers (R9.1, R9.3, R9.4)
+    if definition.mcp_servers:
+        try:
+            from tools.mcp_tool import register_mcp_servers, _load_mcp_config
+            all_mcp = _load_mcp_config()
+            child_mcp = {
+                name: cfg for name, cfg in all_mcp.items()
+                if name in definition.mcp_servers
+            }
+            missing = set(definition.mcp_servers) - set(child_mcp.keys())
+            if missing:
+                logger.warning(
+                    "agent_definition: MCP servers not in config: %s",
+                    ", ".join(sorted(missing)),
+                )
+            if child_mcp:
+                register_mcp_servers(child_mcp)
+                child._agent_mcp_servers = list(child_mcp.keys())
+        except Exception as exc:
+            logger.debug("agent_definition: MCP connect failed: %s", exc)
+
 
 def _build_child_agent(
     task_index: int,
@@ -2957,6 +2978,28 @@ def _run_single_child(
                 child_progress_cb("subagent.complete", **complete_kwargs)
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
+
+        # Phase 5 — R10.2: cleanup child's per-agent MCP servers (best-effort)
+        _child_mcp = getattr(child, "_agent_mcp_servers", None)
+        if _child_mcp:
+            try:
+                from tools.mcp_tool import _servers, _lock as _mcp_lock
+                from tools.registry import registry as _reg
+                with _mcp_lock:
+                    for _srv in _child_mcp:
+                        _task = _servers.pop(_srv, None)
+                        if _task is not None:
+                            for _tn in getattr(_task, "_registered_tool_names", []):
+                                try:
+                                    _reg.deregister(_tn)
+                                except Exception:
+                                    pass
+                            try:
+                                _task._shutdown_event.set()
+                            except Exception:
+                                pass
+            except Exception:
+                pass
 
         return entry
 
