@@ -1645,7 +1645,6 @@ def _apply_agent_definition(child, role_name: str, parent_agent) -> None:
         except Exception as exc:
             logger.debug("agent_definition: MCP connect failed: %s", exc)
 
-
 def _build_child_agent(
     task_index: int,
     goal: str,
