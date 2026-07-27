@@ -10599,6 +10599,39 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     )
                     sys.exit(1)
 
+            # Post-reset: merge my-patches branch if it exists (preserve custom patches)
+            try:
+                import subprocess as _sp
+                _result = _sp.run(
+                    ["git", "rev-parse", "--verify", "my-patches"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                )
+                if _result.returncode == 0:
+                    print("  → Merging my-patches branch...")
+                    _merge_result = _sp.run(
+                        ["git", "merge", "my-patches", "--no-edit", "-Xtheirs"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if _merge_result.returncode == 0:
+                        print("  ✓ my-patches merged successfully")
+                    else:
+                        # Check if it's just "already up to date"
+                        if "Already up to date" in _merge_result.stdout:
+                            print("  ✓ my-patches already up to date")
+                        elif "CONFLICT" in _merge_result.stdout or "Automatic merge failed" in _merge_result.stdout:
+                            print("⚠️  Merge conflict with my-patches - manual resolution required")
+                            print(f"  {_merge_result.stdout.strip()[:200]}")
+                            print("  Run 'git status' to see conflicts")
+                        else:
+                            print(f"  ⚠️  Merge failed: {_merge_result.stderr.strip()[:200]}")
+            except Exception as _e:
+                # Non-fatal: my-patches merge is best effort
+                import logging
+                logging.getLogger(__name__).debug(f"my-patches merge skipped: {_e}")
+
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
             # made it through CI (e.g. admin-merge bypass of a failing
