@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
 
 # Read-only tools with no shared mutable session state.
-_PARALLEL_SAFE_TOOLS = frozenset({
+_LEGACY_PARALLEL_SAFE_TOOLS = frozenset({
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",
@@ -102,6 +102,26 @@ def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return False
 
 
+def _is_tool_parallel_safe(tool_name: str) -> bool:
+    """Registry-first parallel safety check (Phase 3 R6.2).
+
+    Explicit registry metadata (is_concurrency_safe) wins over the legacy
+    hardcoded frozenset. A tool with is_concurrency_safe=False is never
+    parallel even if in the legacy frozenset (R6.4).
+    """
+    try:
+        from tools.registry import registry as _registry
+        safety = _registry.get_tool_safety(tool_name)
+        if safety["is_concurrency_safe"] is not None:
+            return safety["is_concurrency_safe"]
+    except Exception:
+        pass
+    return (
+        tool_name in _LEGACY_PARALLEL_SAFE_TOOLS
+        or _is_mcp_tool_parallel_safe(tool_name)
+    )
+
+
 def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
     """Split a tool-call batch into ordered ``(kind, calls)`` segments.
 
@@ -120,7 +140,7 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
       parallel run only when their target path does not overlap another
       path already reserved in the same run; an overlap closes the run so
       the conflicting call starts a NEW run after the first completes.
-    * Anything not in ``_PARALLEL_SAFE_TOOLS`` and not an opted-in MCP
+    * Anything not in ``_LEGACY_PARALLEL_SAFE_TOOLS`` and not an opted-in MCP
       tool → barrier.
 
     Parallel runs shorter than two calls are demoted to sequential (no
@@ -185,7 +205,7 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             current.append(tool_call)
             continue
 
-        if tool_name in _PARALLEL_SAFE_TOOLS or _is_mcp_tool_parallel_safe(tool_name):
+        if _is_tool_parallel_safe(tool_name):
             current.append(tool_call)
             continue
 
@@ -632,11 +652,12 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
 
 __all__ = [
     "_NEVER_PARALLEL_TOOLS",
-    "_PARALLEL_SAFE_TOOLS",
+    "_LEGACY_PARALLEL_SAFE_TOOLS",
     "_PATH_SCOPED_TOOLS",
     "_DESTRUCTIVE_PATTERNS",
     "_REDIRECT_OVERWRITE",
     "_is_destructive_command",
+    "_is_tool_parallel_safe",
     "_plan_tool_batch_segments",
     "_should_parallelize_tool_batch",
     "_canonical_path",

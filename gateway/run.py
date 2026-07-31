@@ -17269,6 +17269,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
+                        _history_media_paths = set()  # init: streaming path has no history scope (fixes NameError at gateway/run.py:14561)
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
