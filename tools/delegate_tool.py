@@ -3324,6 +3324,9 @@ def delegate_task(
     # toolset resolution never leaks into the parent (shared with the plugin
     # subagent-lifecycle API).
     children = []
+    # Capture parent tool names before child construction (restored after)
+    import model_tools as _model_tools
+    _parent_tool_names = _model_tools._last_resolved_tool_names
     # ── Worktree isolation (opt-in) ──
     # Compute a shared worktree for ALL children in this delegation call when
     # isolation="worktree" is requested and enabled in config. A single worktree
