@@ -9448,7 +9448,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + ["merge", "--ff-only", f"origin/{branch}"],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -10070,7 +10070,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if gateway_mode:
             _exit_code_path = get_hermes_home() / ".update_exit_code"
             try:
-                _exit_code_path.write_text("0")
+                _exit_code_path.write_text("0", encoding="utf-8")
             except OSError:
                 pass
 
@@ -10700,7 +10700,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if gateway_mode:
                     _exit_code_path = get_hermes_home() / ".update_exit_code"
                     try:
-                        _exit_code_path.write_text("1")
+                        _exit_code_path.write_text("1", encoding="utf-8")
                     except OSError:
                         pass
             _warn_incomplete_gateway_fleet_restart(failed_or_stale_units)

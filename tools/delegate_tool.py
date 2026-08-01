@@ -2363,6 +2363,8 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
+            from agent.delegation_context import delegated_child_context
+
             # Delegation v2: pass resume/fork history as conversation_history
             # so the child continues from prior context instead of starting
             # fresh. _resume_history is set by _resume_child_session; fork
@@ -2370,18 +2372,12 @@ def _run_single_child(
             _resume_history = getattr(child, "_resume_history", None)
             _fork_history = getattr(child, "_fork_parent_messages", None)
             _prior_history = _resume_history or _fork_history
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-                stream_callback=_relay_child_text,
-                conversation_history=_prior_history,
-            )
-
             with delegated_child_context():
                 return child.run_conversation(
                     user_message=goal,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,
+                    conversation_history=_prior_history,
                 )
 
         _child_context = contextvars.copy_context()
@@ -3398,7 +3394,7 @@ def delegate_task(
             except Exception as exc:
                 logger.debug("Worktree cleanup after delegation failed: %s", exc)
 
-    def _execute_and_aggregate() -> dict:
+    def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
         fire subagent_stop hooks + cost rollup, and return the combined result
         dict. Used by BOTH the synchronous path and the background runner. In
