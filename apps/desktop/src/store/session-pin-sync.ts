@@ -108,7 +108,15 @@ function reconcile(): void {
     if (!current.has(id)) {
       mirrored.delete(id)
       pending.delete(id)
-      void writePin(id, false, profileFor(id)).catch(() => {})
+      // Try to find the profile from the loaded session list. If the row
+      // isn't loaded yet (e.g. cross-profile session, list not fetched),
+      // still attempt the PATCH without a profile — the API will use the
+      // active profile, which is the best-effort path. Log failures so
+      // they're diagnosable instead of silently swallowed.
+      const profile = profileFor(id)
+      void writePin(id, false, profile).catch(err => {
+        console.warn('[session-pin-sync] unpin failed for', id, 'profile:', profile, err)
+      })
     }
   }
 

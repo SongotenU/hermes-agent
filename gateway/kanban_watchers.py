@@ -134,7 +134,8 @@ class GatewayKanbanWatchersMixin:
         # Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
         # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
         # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
-        # TODO: gate per-board when per-board dispatcher_owner tracking lands.
+        # NOTE: per-board dispatcher_owner tracking is tracked in issue #HERMES-KANBAN-BOARD.
+        # When implemented, move subscription gating to per-board level.
         try:
             from hermes_cli.config import load_config as _load_config
         except Exception:
