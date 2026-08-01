@@ -319,7 +319,17 @@ def main() -> int:
         parser.error("GITHUB_TOKEN is required")
     session_token = os.environ.get("GH_SESSION_TOKEN", "")
     if not session_token:
-        parser.error("GH_SESSION_TOKEN is required")
+        # gh-image needs a GitHub session token (browser-session cookie) to
+        # upload attachments. When the repo hasn't configured
+        # GH_IMAGE_SESSION_TOKEN yet, skip the publish instead of failing the
+        # whole workflow run — there is nothing meaningful to report until the
+        # attachment upload path works.
+        print(
+            "GH_SESSION_TOKEN is not configured; skipping E2E evidence publish "
+            "(set the GH_IMAGE_SESSION_TOKEN secret in the gh-image environment "
+            "to enable attachment uploads)."
+        )
+        return 0
     publish(token, args.source_repo, args.evidence_dir, args.pr_number, session_token)
     return 0
 
