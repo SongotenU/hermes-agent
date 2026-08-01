@@ -396,9 +396,6 @@ export function unpinSession(sessionId: string) {
     $pinnedSessionIds,
     $pinnedSessionIds.get().filter(id => id !== sessionId)
   )
-  // Also remove from the mirrored set so reconcile() doesn't re-pin it
-  // from the server state before we can send the unpin PATCH.
-  mirrored.delete(sessionId)
 }
 
 // Replace the whole pinned order at once (drag-reorder hands back the new order
