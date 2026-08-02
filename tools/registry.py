@@ -164,11 +164,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "is_read_only", "is_destructive", "is_concurrency_safe",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 is_read_only=None, is_destructive=None, is_concurrency_safe=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -179,14 +181,10 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
-        # Optional zero-arg callable returning a dict of schema overrides
-        # applied at get_definitions() time. Use for fields that depend on
-        # runtime config (e.g. delegate_task's description must reflect the
-        # user's current delegation.max_concurrent_children / max_spawn_depth
-        # so the model isn't told the wrong limits). The callable is invoked
-        # on every get_definitions() call; results are merged shallow on top
-        # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        self.is_read_only = is_read_only
+        self.is_destructive = is_destructive
+        self.is_concurrency_safe = is_concurrency_safe
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +406,25 @@ class ToolRegistry:
         with self._lock:
             return self._tools.get(name)
 
+    def get_tool_safety(self, name: str) -> dict:
+        """Return safety metadata for a tool (Phase 3 R5.5).
+
+        When the tool has explicit is_concurrency_safe metadata, source='registry'.
+        Otherwise source='heuristic' — callers check source to distinguish.
+        """
+        entry = self.get_entry(name)
+        if entry is None:
+            return {"is_read_only": None, "is_destructive": None,
+                    "is_concurrency_safe": None, "source": "heuristic"}
+        if entry.is_concurrency_safe is not None:
+            return {"is_read_only": entry.is_read_only,
+                    "is_destructive": entry.is_destructive,
+                    "is_concurrency_safe": entry.is_concurrency_safe,
+                    "source": "registry"}
+        return {"is_read_only": entry.is_read_only,
+                "is_destructive": entry.is_destructive,
+                "is_concurrency_safe": None, "source": "heuristic"}
+
     def get_registered_toolset_names(self) -> List[str]:
         """Return sorted unique toolset names present in the registry."""
         return sorted({entry.toolset for entry in self._snapshot_entries()})
@@ -508,6 +525,9 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
+        is_read_only: bool | None = None,
+        is_destructive: bool | None = None,
+        is_concurrency_safe: bool | None = None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -567,6 +587,9 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                is_read_only=is_read_only,
+                is_destructive=is_destructive,
+                is_concurrency_safe=is_concurrency_safe,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
