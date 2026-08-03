@@ -38,6 +38,8 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.iteration_budget import IterationBudget
+from agent.continuation_budget import ContinuationBudgetTracker
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,
@@ -1355,6 +1357,52 @@ def run_conversation(
     _last_preflight_pressure: Optional[int] = None
     _preflight_compression_blocked = _ctx.preflight_compression_blocked
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+
+    # Diminishing-returns continuation budget (Claude Code tokenBudget.ts port).
+    # Per-turn: tracks continuation nudges + completion-token deltas; stops the
+    # loop when it keeps nudging without producing new tokens. Config comes
+    # from config.yaml agent.loop_budget.* (never env vars, per AGENTS.md).
+    _loop_budget_cfg: Dict[str, Any] = {}
+    try:
+        from hermes_cli.config import load_config as _load_config
+
+        _loop_budget_cfg = (
+            (_load_config() or {}).get("agent", {}).get("loop_budget", {}) or {}
+        )
+    except Exception:
+        _loop_budget_cfg = {}
+    _continuation_tracker = ContinuationBudgetTracker(
+        min_continuations=int(_loop_budget_cfg.get("min_continuations", 3)),
+        diminishing_threshold=int(
+            _loop_budget_cfg.get("diminishing_token_threshold", 500)
+        ),
+    )
+    _loop_budget_enabled = bool(_loop_budget_cfg.get("enabled", True))
+    _turn_completion_tokens = 0
+
+    def _continuation_budget_stop() -> bool:
+        """Record a continuation nudge; True when the loop must stop.
+
+        On stop: warn + user-facing status, mirroring the content-filter
+        escalation path's observability pattern.
+        """
+        if not _loop_budget_enabled:
+            return False
+        if not _continuation_tracker.record_continuation(_turn_completion_tokens):
+            return False
+        logger.warning(
+            "%sLoop stopped: diminishing returns (%d continuations, <%d tokens "
+            "each this turn)",
+            agent.log_prefix,
+            _continuation_tracker.continuation_count,
+            _continuation_tracker.diminishing_threshold,
+        )
+        agent._emit_status(
+            "Stopped: diminishing returns "
+            f"({_continuation_tracker.continuation_count} continuations, "
+            f"<{_continuation_tracker.diminishing_threshold} tokens each)"
+        )
+        return True
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
     # user-facing result available; it must not be confused with error or
@@ -3086,6 +3134,27 @@ def run_conversation(
                                 _continue_content = _get_continuation_prompt(
                                     _is_partial_stream_stub, _dropped_tools
                                 )
+                                if _continuation_budget_stop():
+                                    partial_response = agent._strip_think_blocks(
+                                        "".join(truncated_response_parts)
+                                    ).strip()
+                                    agent._cleanup_task_resources(effective_task_id)
+                                    agent._persist_session(messages, conversation_history)
+                                    return {
+                                        "final_response": partial_response or None,
+                                        "messages": messages,
+                                        "api_calls": api_call_count,
+                                        "completed": False,
+                                        "partial": True,
+                                        "stop_reason": "diminishing_returns",
+                                        "error": (
+                                            "Stopped: diminishing returns "
+                                            f"({_continuation_tracker.continuation_count} "
+                                            "continuations, "
+                                            f"<{_continuation_tracker.diminishing_threshold} "
+                                            "tokens each)"
+                                        ),
+                                    }
                                 continue_msg = {
                                     "role": "user",
                                     "content": _continue_content,
@@ -3306,6 +3375,7 @@ def run_conversation(
                     agent.session_completion_tokens += completion_tokens
                     agent.session_total_tokens += total_tokens
                     agent.session_api_calls += 1
+                    _turn_completion_tokens += completion_tokens
                     agent.session_input_tokens += canonical_usage.input_tokens
                     agent.session_output_tokens += canonical_usage.output_tokens
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
@@ -5856,6 +5926,24 @@ def run_conversation(
                         f"asking it to continue "
                         f"({agent._codex_incomplete_retries}/3)"
                     )
+                    if _continuation_budget_stop():
+                        agent._cleanup_task_resources(effective_task_id)
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": final_response or None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "stop_reason": "diminishing_returns",
+                            "error": (
+                                "Stopped: diminishing returns "
+                                f"({_continuation_tracker.continuation_count} "
+                                "continuations, "
+                                f"<{_continuation_tracker.diminishing_threshold} "
+                                "tokens each)"
+                            ),
+                        }
                     agent._session_messages = messages
                     continue
 
@@ -6800,6 +6888,24 @@ def run_conversation(
                     )
                 ):
                     codex_ack_continuations += 1
+                    if _continuation_budget_stop():
+                        agent._cleanup_task_resources(effective_task_id)
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": final_response or None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "stop_reason": "diminishing_returns",
+                            "error": (
+                                "Stopped: diminishing returns "
+                                f"({_continuation_tracker.continuation_count} "
+                                "continuations, "
+                                f"<{_continuation_tracker.diminishing_threshold} "
+                                "tokens each)"
+                            ),
+                        }
                     interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
                     messages.append(interim_msg)
                     agent._emit_interim_assistant_message(interim_msg)
