@@ -3723,6 +3723,7 @@ def delegate_task(
     # per call keeps children mutually consistent; nested calls get their own.
     _call_worktree: Optional[str] = None
     if isolation == "worktree":
+        import uuid as _uuid
         _base_hint = _resolve_workspace_hint(parent_agent) or os.getcwd()
         _call_worktree = _create_worktree(_base_hint, f"del-{_uuid.uuid4().hex[:8]}")
     try:
