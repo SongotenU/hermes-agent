@@ -2467,9 +2467,18 @@ def _run_single_child(
         # isolated in its own record (a child's cd no longer bleeds back into
         # the parent once readers flip to the record store).
         try:
-            from tools.terminal_tool import get_session_cwd, record_session_cwd
+            from tools.terminal_tool import (
+                get_session_cwd,
+                record_session_cwd,
+                register_container_alias,
+            )
 
             record_session_cwd(child_task_id, get_session_cwd(parent_task_id))
+            # Per-session container isolation (docker + container_persistent:
+            # false) keys containers by session task_id. The child must share
+            # the PARENT's container — register the alias so the child's
+            # task_id resolves to the parent's container key.
+            register_container_alias(child_task_id, parent_task_id)
         except Exception as e:
             logger.debug("Child cwd seed failed: %s", e)
         wall_start = time.time()
@@ -2516,10 +2525,22 @@ def _run_single_child(
             # so the child continues from prior context instead of starting
             # fresh. _resume_history is set by _resume_child_session; fork
             # children get parent messages via _fork_parent_messages.
+            # Only pass the kwarg when real history exists (a non-empty list
+            # of messages) — a None/absent value keeps the call identical to
+            # upstream, and MagicMock children auto-create attributes so a
+            # truthiness check alone would misfire.
             _resume_history = getattr(child, "_resume_history", None)
             _fork_history = getattr(child, "_fork_parent_messages", None)
             _prior_history = _resume_history or _fork_history
+
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                if isinstance(_prior_history, list) and _prior_history:
+                    return child.run_conversation(
+                        user_message=goal,
+                        task_id=child_task_id,
+                        stream_callback=_relay_child_text,
+                        conversation_history=_prior_history,
+                    )
                 return child.run_conversation(
                     user_message=goal,
                     task_id=child_task_id,
@@ -3698,22 +3719,23 @@ def delegate_task(
         _capture_gateway_steer_authority(_origin_ui_session_id)
     )
 
+    # Build all child agents on the main thread (thread-safe construction).
+    # _build_child_preserving_parent_tools saves/restores the parent's
+    # resolved tool names around each construction under a lock, so child
+    # toolset resolution never leaks into the parent (shared with the plugin
+    # subagent-lifecycle API).
+    children = []
+
     # ── Worktree isolation (opt-in) ──
     # Compute a shared worktree for ALL children in this delegation call when
     # isolation="worktree" is requested and enabled in config. A single worktree
     # per call keeps children mutually consistent; nested calls get their own.
     _call_worktree: Optional[str] = None
     if isolation == "worktree":
+        import uuid as _uuid
         _base_hint = _resolve_workspace_hint(parent_agent) or os.getcwd()
         _call_worktree = _create_worktree(_base_hint, f"del-{_uuid.uuid4().hex[:8]}")
-
     try:
-        # Build all child agents on the main thread (thread-safe construction).
-        # _build_child_preserving_parent_tools saves/restores the parent's
-        # resolved tool names around each construction under a lock, so child
-        # toolset resolution never leaks into the parent (shared with the plugin
-        # subagent-lifecycle API).
-        children = []
         for i, t in enumerate(task_list):
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
