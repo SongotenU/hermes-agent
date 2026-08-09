@@ -3766,8 +3766,8 @@ def delegate_task(
                     getattr(child, "tool_progress_callback", None), _writer
                 )
                 child._live_transcript_path = str(_writer.path)
-            # Override with correct parent tool names (before child construction mutated global)
-            child._delegate_saved_tool_names = _parent_tool_names
+            # _build_child_preserving_parent_tools already saved the parent's
+            # tool names onto child._delegate_saved_tool_names under the lock.
             # Delegation v2 — fork mode: child inherits parent's rendered
             # system prompt (byte-exact for cache sharing) + conversation
             # history. The goal is a directive, not a briefing (R4.1–R4.4).
