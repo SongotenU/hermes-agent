@@ -2545,7 +2545,6 @@ def _run_single_child(
                     user_message=goal,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,
-                    conversation_history=_prior_history,
                 )
 
         _child_context = contextvars.copy_context()
