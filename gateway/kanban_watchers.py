@@ -160,11 +160,31 @@ class GatewayKanbanWatchersMixin:
         adapters it hosts. The dispatch-owning gateway also handles legacy
         subscriptions without a profile stamp.
         """
-        # Dispatch and delivery have separate ownership. A deployment may run
-        # one dispatcher while each profile has its own gateway credentials;
-        # those adapter-owning gateways must still poll and deliver their own
-        # subscriptions. Legacy rows without a notifier_profile are visible
-        # only while this process holds the actual singleton dispatcher lock.
+# Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
+        # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
+        # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
+        # NOTE: per-board dispatcher_owner tracking is tracked in issue #HERMES-KANBAN-BOARD.
+        # When implemented, move subscription gating to per-board level.
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            logger.warning("kanban notifier: config loader unavailable; disabled")
+            return
+        env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
+        if env_override in {"0", "false", "no", "off"}:
+            logger.info("kanban notifier: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY env")
+            return
+        try:
+            cfg = _load_config()
+        except Exception as exc:
+            logger.warning("kanban notifier: cannot load config (%s); disabled", exc)
+            return
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if not kanban_cfg.get("dispatch_in_gateway", True):
+            logger.info(
+                "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
+            )
+            return
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb

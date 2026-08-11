@@ -2521,6 +2521,7 @@ def _run_single_child(
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
+
             # Delegation v2: pass resume/fork history as conversation_history
             # so the child continues from prior context instead of starting
             # fresh. _resume_history is set by _resume_child_session; fork
