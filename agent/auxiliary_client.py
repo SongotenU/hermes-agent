@@ -1341,13 +1341,31 @@ _ANTHROPIC_COMPATIBLE_HOSTS = frozenset({
 
 
 def _is_anthropic_compatible_host(url: str) -> bool:
-    """Return True if ``url``'s hostname is an Anthropic endpoint we trust for aux calls."""
+    """Return True if ``url`` is an Anthropic endpoint we trust for aux calls.
+
+    Trust the native Anthropic hosts, plus Anthropic-compatible gateways that
+    expose the native Messages protocol under a ``/anthropic`` path suffix
+    (MiniMax, Zhipu GLM, LiteLLM-style relays, self-hosted proxies). That suffix
+    is the same convention ``runtime_provider._detect_api_mode_for_url`` uses to
+    route ``provider: anthropic`` on the primary path, and ``_wrap_if_needed``
+    uses to pick the Anthropic wire transport — without this, ``_try_anthropic``
+    discards a configured ``model.base_url`` for auxiliary and fallback calls and
+    forces ``https://api.anthropic.com``, so those calls diverge from the main
+    agent's endpoint (and fail when the gateway, not Anthropic, holds auth).
+
+    A bare non-Anthropic base_url (e.g. a stale ``openrouter.ai/api/v1`` left on
+    ``provider: anthropic``) still returns False — the guard #52608 added.
+    """
     if not url:
         return False
     try:
         from urllib.parse import urlparse
-        host = (urlparse(url).hostname or "").strip().lower().rstrip(".")
-        return host in _ANTHROPIC_COMPATIBLE_HOSTS
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").strip().lower().rstrip(".")
+        if host in _ANTHROPIC_COMPATIBLE_HOSTS:
+            return True
+        path = (parsed.path or "").rstrip("/").lower()
+        return path.endswith("/anthropic") or path.endswith("/anthropic/v1")
     except Exception:
         return False
 
@@ -6281,8 +6299,18 @@ def resolve_provider_client(
     if provider == "custom":
         custom_base = ""
         custom_key = ""
+        # Base passed to _wrap_if_needed for the Anthropic-wrap decision.  It
+        # normally equals custom_base, but anthropic_messages talks to the
+        # /anthropic surface directly, so it must keep the raw /anthropic base
+        # while the plain OpenAI client (created from custom_base below, and the
+        # OpenAI-wire fallback taken when the anthropic SDK is unavailable) still
+        # uses the /v1-rewritten base so it never lands on
+        # /anthropic/chat/completions.  Empty means "use custom_base". See #16254.
+        wrap_base = ""
         if explicit_base_url:
             custom_base = _to_openai_base_url(explicit_base_url).strip()
+            if api_mode == "anthropic_messages":
+                wrap_base = (explicit_base_url or "").strip().rstrip("/")
             custom_key = (
                 (explicit_api_key or "").strip()
                 or _scoped_key_env("OPENAI_API_KEY")
@@ -6339,7 +6367,7 @@ def resolve_provider_client(
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
             client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
-            client = _wrap_if_needed(client, final_model, custom_base, custom_key)
+            client = _wrap_if_needed(client, final_model, wrap_base or custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         # Try custom first, then API-key providers (Codex excluded here:
