@@ -495,6 +495,24 @@ def _(rid, params: dict) -> dict:
                 if err is not None:
                     return err
             else:
+                # Once active user turns carry durable row ids, an ordinal-only
+                # target is an unsafe downgrade: renderer and gateway ordinals
+                # can diverge after compaction/rebuild while the row id remains
+                # stable. Require the client to prove which durable turn it
+                # means instead of persisting a potentially mis-aimed cut.
+                if any(_message_row_id(history[h_idx]) is not None for h_idx in user_indices):
+                    logger.warning(
+                        "prompt.submit: REFUSED ordinal-only truncation of durable "
+                        "session %s (ordinal=%d); truncate_before_row_id required",
+                        sid,
+                        client_ordinal,
+                    )
+                    return _err(
+                        rid,
+                        4004,
+                        "ordinal-only truncation is unsafe for durable session history; "
+                        "include truncate_before_row_id",
+                    )
                 ordinal = client_ordinal
 
             # Reject out-of-range ordinals on BOTH ends. A negative value would
@@ -564,8 +582,12 @@ def _(rid, params: dict) -> dict:
                     # #82756). Soft-archiving keeps them on disk (active=0) and
                     # in the FTS index, so a mis-aimed cut is recoverable
                     # instead of terminal. The live transcript is unchanged.
+                    # Fall back to session id when session_key is NULL — CLI-origin
+                    # sessions created before the session_key default fix have no
+                    # key, and replace_messages(None) triggers an FK violation.
+                    truncation_key = session.get("session_key") or sid
                     db.replace_messages(
-                        session["session_key"],
+                        truncation_key,
                         truncated,
                         active_only=True,
                         archive_dropped=True,
