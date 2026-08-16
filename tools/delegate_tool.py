@@ -2814,6 +2814,13 @@ def _run_single_child(
             _fork_history = getattr(child, "_fork_parent_messages", None)
             _prior_history = _resume_history or _fork_history
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                if isinstance(_prior_history, list) and _prior_history:
+                    return child.run_conversation(
+                        user_message=goal,
+                        task_id=child_task_id,
+                        stream_callback=_relay_child_text,
+                        conversation_history=_prior_history,
+                    )
                 return child.run_conversation(
                     user_message=goal,
                     task_id=child_task_id,
@@ -5043,6 +5050,27 @@ DELEGATE_TASK_SCHEMA = {
                     "the work finishes; just continue working in the meantime. "
                     "Setting this has no effect; the parameter remains only for "
                     "backward compatibility."
+                ),
+            },
+            "resume": {
+                "type": "string",
+                "description": (
+                    "Resume a previously completed subagent by its subagent_id. "
+                    "The child inherits the prior session's messages and continues "
+                    "with the new goal. Only works for subagents spawned by the "
+                    "current session that have completed (not still running). "
+                    "Mutually exclusive with mode='fork'."
+                ),
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["fresh", "fork"],
+                "description": (
+                    "fresh (default): child starts with zero context. "
+                    "fork: child inherits the parent's conversation history and "
+                    "system prompt (shares prompt cache — cheaper for research "
+                    "tasks). Requires a provider with prompt caching. "
+                    "exclusive with resume."
                 ),
             },
             "action": {

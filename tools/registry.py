@@ -784,10 +784,10 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
-        scope: Optional[str] = None,
         is_read_only: bool | None = None,
         is_destructive: bool | None = None,
         is_concurrency_safe: bool | None = None,
+        scope: Optional[str] = None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
