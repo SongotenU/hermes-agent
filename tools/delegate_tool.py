@@ -2806,19 +2806,13 @@ def _run_single_child(
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-
             # Delegation v2: pass resume/fork history as conversation_history
             # so the child continues from prior context instead of starting
             # fresh. _resume_history is set by _resume_child_session; fork
             # children get parent messages via _fork_parent_messages.
-            # Only pass the kwarg when real history exists (a non-empty list
-            # of messages) — a None/absent value keeps the call identical to
-            # upstream, and MagicMock children auto-create attributes so a
-            # truthiness check alone would misfire.
             _resume_history = getattr(child, "_resume_history", None)
             _fork_history = getattr(child, "_fork_parent_messages", None)
             _prior_history = _resume_history or _fork_history
-
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 if isinstance(_prior_history, list) and _prior_history:
                     return child.run_conversation(
@@ -2831,6 +2825,7 @@ def _run_single_child(
                     user_message=goal,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,
+                    conversation_history=_prior_history,
                 )
 
         _child_context = contextvars.copy_context()
@@ -3293,7 +3288,7 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
 
-# Phase 5 — R10.2: cleanup child's per-agent MCP servers (best-effort)
+        # Phase 5 — R10.2: cleanup child's per-agent MCP servers (best-effort)
         _child_mcp = getattr(child, "_agent_mcp_servers", None)
         if _child_mcp:
             try:
@@ -4045,13 +4040,6 @@ def delegate_task(
         _capture_gateway_steer_authority(_origin_ui_session_id)
     )
 
-    # Build all child agents on the main thread (thread-safe construction).
-    # _build_child_preserving_parent_tools saves/restores the parent's
-    # resolved tool names around each construction under a lock, so child
-    # toolset resolution never leaks into the parent (shared with the plugin
-    # subagent-lifecycle API).
-    children = []
-
     # ── Worktree isolation (opt-in) ──
     # Compute a shared worktree for ALL children in this delegation call when
     # isolation="worktree" is requested and enabled in config. A single worktree
@@ -4061,7 +4049,14 @@ def delegate_task(
         import uuid as _uuid
         _base_hint = _resolve_workspace_hint(parent_agent) or os.getcwd()
         _call_worktree = _create_worktree(_base_hint, f"del-{_uuid.uuid4().hex[:8]}")
+
     try:
+        # Build all child agents on the main thread (thread-safe construction).
+        # _build_child_preserving_parent_tools saves/restores the parent's
+        # resolved tool names around each construction under a lock, so child
+        # toolset resolution never leaks into the parent (shared with the plugin
+        # subagent-lifecycle API).
+        children = []
         for i, t in enumerate(task_list):
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
@@ -5108,6 +5103,27 @@ DELEGATE_TASK_SCHEMA = {
                     "and specific — the child sees it appended to its next "
                     "tool result mid-run (e.g. \"Stop exploring X; focus on Y "
                     "and return early results\")."
+                ),
+            },
+            "resume": {
+                "type": "string",
+                "description": (
+                    "Resume a previously completed subagent by its subagent_id. "
+                    "The child inherits the prior session's messages and continues "
+                    "with the new goal. Only works for subagents spawned by the "
+                    "current session that have completed (not still running). "
+                    "Mutually exclusive with mode='fork'."
+                ),
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["fresh", "fork"],
+                "description": (
+                    "fresh (default): child starts with zero context. "
+                    "fork: child inherits the parent's conversation history and "
+                    "system prompt (shares prompt cache — cheaper for research "
+                    "tasks). Requires a provider with prompt caching. Mutually "
+                    "exclusive with resume."
                 ),
             },
         },

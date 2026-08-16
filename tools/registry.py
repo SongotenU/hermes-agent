@@ -545,6 +545,25 @@ class ToolRegistry:
                 "is_destructive": entry.is_destructive,
                 "is_concurrency_safe": None, "source": "heuristic"}
 
+    def get_tool_safety(self, name: str) -> dict:
+        """Return safety metadata for a tool (Phase 3 R5.5).
+
+        When the tool has explicit is_concurrency_safe metadata, source='registry'.
+        Otherwise source='heuristic' — callers check source to distinguish.
+        """
+        entry = self.get_entry(name)
+        if entry is None:
+            return {"is_read_only": None, "is_destructive": None,
+                    "is_concurrency_safe": None, "source": "heuristic"}
+        if entry.is_concurrency_safe is not None:
+            return {"is_read_only": entry.is_read_only,
+                    "is_destructive": entry.is_destructive,
+                    "is_concurrency_safe": entry.is_concurrency_safe,
+                    "source": "registry"}
+        return {"is_read_only": entry.is_read_only,
+                "is_destructive": entry.is_destructive,
+                "is_concurrency_safe": None, "source": "heuristic"}
+
     def get_registered_toolset_names(self) -> List[str]:
         """Return sorted unique toolset names present in the registry."""
         return sorted({entry.toolset for entry in self._snapshot_entries()})
@@ -765,7 +784,7 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
-is_read_only: bool | None = None,
+        is_read_only: bool | None = None,
         is_destructive: bool | None = None,
         is_concurrency_safe: bool | None = None,
         scope: Optional[str] = None,
