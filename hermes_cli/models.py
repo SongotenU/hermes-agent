@@ -134,9 +134,22 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
     ("poolside/laguna-m.1:free",               "free"),
+    ("poolside/laguna-s-2.1:free",             "free"),
+    ("poolside/laguna-xs-2.1:free",            "free"),
     ("tencent/hy3:free",                       "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
+    ("nvidia/nemotron-3-nano-30b-a3b:free",    "free"),
+    ("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "free"),
+    ("nvidia/nemotron-3.5-lightning:free",     "free"),
+    ("nvidia/nemotron-3.5-content-safety:free","free"),
+    ("nvidia/nemotron-nano-12b-v2-vl:free",    "free"),
+    ("nvidia/nemotron-nano-9b-v2:free",        "free"),
+    ("cohere/north-mini-code:free",            "free"),
+    ("dots-studio/dots-3-note-preview:free",   "free"),
+    ("google/gemma-4-26b-a4b-it:free",         "free"),
+    ("google/gemma-4-31b-it:free",             "free"),
+    ("openai/gpt-oss-20b:free",                "free"),
     ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 
