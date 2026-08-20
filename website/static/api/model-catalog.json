@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-17T19:11:38Z",
+  "updated_at": "2026-08-18T12:43:19Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -162,6 +162,14 @@
           "description": "free"
         },
         {
+          "id": "poolside/laguna-s-2.1:free",
+          "description": "free"
+        },
+        {
+          "id": "poolside/laguna-xs-2.1:free",
+          "description": "free"
+        },
+        {
           "id": "tencent/hy3:free",
           "description": "free"
         },
@@ -171,6 +179,50 @@
         },
         {
           "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-3-nano-30b-a3b:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-3.5-lightning:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-3.5-content-safety:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-nano-12b-v2-vl:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-nano-9b-v2:free",
+          "description": "free"
+        },
+        {
+          "id": "cohere/north-mini-code:free",
+          "description": "free"
+        },
+        {
+          "id": "dots-studio/dots-3-note-preview:free",
+          "description": "free"
+        },
+        {
+          "id": "google/gemma-4-26b-a4b-it:free",
+          "description": "free"
+        },
+        {
+          "id": "google/gemma-4-31b-it:free",
+          "description": "free"
+        },
+        {
+          "id": "openai/gpt-oss-20b:free",
           "description": "free"
         },
         {
