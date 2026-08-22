@@ -502,7 +502,7 @@ class TestToolNamePreservation(unittest.TestCase):
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
 
-            def capture_and_return(user_message, task_id=None, stream_callback=None, conversation_history=None):
+            def capture_and_return(user_message, task_id=None, stream_callback=None):
                 captured["saved"] = list(mock_child._delegate_saved_tool_names)
                 return {"final_response": "ok", "completed": True, "api_calls": 1}
 
@@ -763,6 +763,134 @@ class TestSubagentCostRollup(unittest.TestCase):
         for entry in result["results"]:
             self.assertNotIn("_child_cost_usd", entry)
             self.assertNotIn("_child_role", entry)
+
+class TestChainDelegation(unittest.TestCase):
+    """{previous}-chained batch delegation (Pi-inspired pipeline mode).
+
+    When any task goal carries the literal ``{previous}`` token the batch
+    must run SEQUENTIALLY in task order, substituting the preceding task's
+    summary into each occurrence — enabling research→draft→review pipelines
+    without a parent round-trip between steps.
+    """
+
+    def test_batch_is_chain_detection(self):
+        from tools.delegate_tool import _batch_is_chain
+
+        self.assertTrue(_batch_is_chain([{"goal": "use {previous} here"}]))
+        self.assertTrue(_batch_is_chain([{"goal": "summarize {Previous} now"}]))
+        self.assertTrue(
+            _batch_is_chain([{"goal": "a"}, {"goal": "b {previous} c"}])
+        )
+        # Plain batches stay parallel.
+        self.assertFalse(_batch_is_chain([{"goal": "plain"}, {"goal": "also plain"}]))
+        # Non-placeholder braces must NOT trigger chain mode (post-#81141
+        # contract: JSON snippets, glob braces, f-strings are legal goals).
+        self.assertFalse(
+            _batch_is_chain([{"goal": 'parse {"key": 1} and {a,b} and {i}'}])
+        )
+
+    def _make_parent(self):
+        p = _make_mock_parent()
+        return p
+
+    def test_chain_runs_sequentially_and_expands_previous(self):
+        parent = self._make_parent()
+        calls = []
+
+        def record(task_index, goal, child=None, parent_agent=None, **kw):
+            calls.append((task_index, goal))
+            return {
+                "task_index": task_index,
+                "status": "completed",
+                "summary": f"OUT{task_index}",
+                "api_calls": 1,
+                "duration_seconds": 0.1,
+            }
+
+        with patch("tools.delegate_tool._run_single_child", side_effect=record):
+            delegate_task(
+                tasks=[
+                    {"goal": "Research topic X thoroughly"},
+                    {"goal": "Draft an essay from these findings: {previous}"},
+                    {"goal": "Critique this draft point by point: {previous}"},
+                ],
+                parent_agent=parent,
+            )
+
+        # Strict task order proves sequencing (call N+1 saw task N's output,
+        # which is impossible under parallel dispatch).
+        self.assertEqual([c[0] for c in calls], [0, 1, 2])
+        self.assertEqual(calls[0][1], "Research topic X thoroughly")
+        self.assertIn("OUT0", calls[1][1])
+        self.assertNotIn("{previous}", calls[1][1])
+        self.assertIn("OUT1", calls[2][1])
+        self.assertNotIn("{previous}", calls[2][1])
+
+    def test_chain_failed_previous_substitutes_error_note(self):
+        parent = self._make_parent()
+
+        def record(task_index, goal, child=None, parent_agent=None, **kw):
+            if task_index == 0:
+                return {
+                    "task_index": 0,
+                    "status": "failed",
+                    "summary": None,
+                    "error": "provider 500",
+                    "api_calls": 1,
+                    "duration_seconds": 0.2,
+                }
+            return {
+                "task_index": task_index,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.1,
+            }
+
+        with patch("tools.delegate_tool._run_single_child", side_effect=record):
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "This one will fail hard"},
+                        {"goal": "Continue anyway from: {previous}"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+
+        # Both children ran; the second received a failure notice instead of
+        # None/exception text, so the pipeline degrades gracefully.
+        self.assertEqual(len(result["results"]), 2)
+
+    def test_plain_batch_goals_never_mutated(self):
+        parent = self._make_parent()
+        seen_goals = []
+
+        def record(task_index, goal, child=None, parent_agent=None, **kw):
+            seen_goals.append(goal)
+            return {
+                "task_index": task_index,
+                "status": "completed",
+                "summary": "s",
+                "api_calls": 0,
+                "duration_seconds": 0.0,
+            }
+
+        with patch("tools.delegate_tool._run_single_child", side_effect=record):
+            delegate_task(
+                tasks=[{"goal": "Investigate module A"}, {"goal": "Investigate module B"}],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(seen_goals, ["Investigate module A", "Investigate module B"])
+
+    def test_tasks_param_documents_chain_mode(self):
+        from tools.delegate_tool import _build_tasks_param_description
+
+        desc = _build_tasks_param_description()
+        self.assertIn("{previous}", desc)
+        self.assertIn("sequentially", desc.lower())
+
 
 class TestBlockedTools(unittest.TestCase):
 
@@ -1722,7 +1850,7 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 m.thinking_callback = None
                 orch_mock["agent"] = m
 
-                def _orchestrator_run(user_message=None, task_id=None, stream_callback=None, conversation_history=None):
+                def _orchestrator_run(user_message=None, task_id=None, stream_callback=None):
                     # Re-entrant: orchestrator spawns two leaves
                     delegate_task(
                         tasks=[
