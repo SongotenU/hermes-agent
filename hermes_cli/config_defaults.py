@@ -2837,6 +2837,15 @@ DEFAULT_CONFIG = {
             # estimate), regardless of context size. Range 200..60000.
             "listing_max_tokens": 4000,
         },
+        "callback_deadlines": {
+            # Per-callback deadline budgets in seconds. When a callback exceeds
+            # its budget, it is cut (fail-open for observers, fail-closed for
+            # veto hooks when Phase 5 lands). None/disabled = no enforcement.
+            "check_fn": 5.0,
+            "pre_hook": 10.0,
+            "post_hook": 10.0,
+            # "handler": not set globally — per-tool declares its own timeout
+        },
     },
 
     # Logging — controls file logging to ~/.hermes/logs/.

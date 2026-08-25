@@ -209,12 +209,14 @@ class ToolEntry:
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
         "is_read_only", "is_destructive", "is_concurrency_safe",
+        "callback_deadline",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
                  max_result_size_chars=None, dynamic_schema_overrides=None,
-                 is_read_only=None, is_destructive=None, is_concurrency_safe=None):
+                 is_read_only=None, is_destructive=None, is_concurrency_safe=None,
+                 callback_deadline=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -229,6 +231,7 @@ class ToolEntry:
         self.is_read_only = is_read_only
         self.is_destructive = is_destructive
         self.is_concurrency_safe = is_concurrency_safe
+        self.callback_deadline = callback_deadline
 
 
 class _PluginOverridePolicy:
@@ -415,6 +418,30 @@ def _check_fn_cached(fn: Callable) -> bool:
         return False
 
 
+def _check_fn_cached_with_deadline(fn: Callable, tool_entry=None) -> bool:
+    """Run check_fn with deadline budget enforcement (Phase 3 R1).
+    
+    If tool_entry has callback_deadline with check_fn budget, enforce it.
+    Returns the check_fn result (True/False).
+    """
+    # Resolve deadline from tool_entry
+    deadline_s = None
+    if tool_entry and tool_entry.callback_deadline:
+        deadline_s = tool_entry.callback_deadline.get("check_fn")
+    
+    if deadline_s is None:
+        return _check_fn_cached(fn)
+    
+    # Run with deadline enforcement
+    from agent.tool_executor import _run_sync_with_deadline
+    result = _run_sync_with_deadline(fn, deadline_s, tool_entry.name, "check_fn")
+    
+    # If deadline exceeded, result is None (fail-open = return True to allow tool)
+    if result is None:
+        return True
+    return result
+
+
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results. Call after config changes that
     affect tool availability (e.g. ``hermes tools enable``)."""
@@ -526,7 +553,7 @@ class ToolRegistry:
             if not entry.check_fn:
                 return True
             if entry.check_fn not in check_results:
-                check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                check_results[entry.check_fn] = _check_fn_cached_with_deadline(entry.check_fn, entry)
             if check_results[entry.check_fn]:
                 return True
         return False
@@ -813,6 +840,7 @@ class ToolRegistry:
         is_read_only: bool | None = None,
         is_destructive: bool | None = None,
         is_concurrency_safe: bool | None = None,
+        callback_deadline: dict | None = None,
         scope: Optional[str] = None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
@@ -912,6 +940,7 @@ class ToolRegistry:
                 is_read_only=is_read_only,
                 is_destructive=is_destructive,
                 is_concurrency_safe=is_concurrency_safe,
+                callback_deadline=callback_deadline,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -1106,7 +1135,7 @@ class ToolRegistry:
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
-                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                    check_results[entry.check_fn] = _check_fn_cached_with_deadline(entry.check_fn, entry)
                 if not check_results[entry.check_fn]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
