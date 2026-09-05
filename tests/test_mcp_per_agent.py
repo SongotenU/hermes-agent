@@ -21,8 +21,8 @@ class TestMcpConnect:
         )
 
         with patch("agent.agent_definition.get_loader") as mock_gl, \
-             patch("tools.mcp_tool.register_mcp_servers") as mock_reg, \
-             patch("tools.mcp_tool._load_mcp_config", return_value={
+             patch("tools.mcp_tool_discovery.register_mcp_servers") as mock_reg, \
+             patch("tools.mcp_tool_config._load_mcp_config", return_value={
                  "db_server": {"command": "db"},
                  "search_server": {"command": "search"},
                  "global_server": {"command": "global"},
@@ -51,8 +51,8 @@ class TestMcpConnect:
         )
 
         with patch("agent.agent_definition.get_loader") as mock_gl, \
-             patch("tools.mcp_tool.register_mcp_servers") as mock_reg, \
-             patch("tools.mcp_tool._load_mcp_config", return_value={
+             patch("tools.mcp_tool_discovery.register_mcp_servers") as mock_reg, \
+             patch("tools.mcp_tool_config._load_mcp_config", return_value={
                  "real": {"command": "r"},
              }):
             mock_loader = MagicMock()
@@ -75,7 +75,7 @@ class TestMcpConnect:
         mock_def = AgentDefinition(name="worker", mcp_servers=None, body="")
 
         with patch("agent.agent_definition.get_loader") as mock_gl, \
-             patch("tools.mcp_tool.register_mcp_servers") as mock_reg:
+             patch("tools.mcp_tool_discovery.register_mcp_servers") as mock_reg:
             mock_loader = MagicMock()
             mock_loader.load.return_value = mock_def
             mock_gl.return_value = mock_loader
