@@ -102,6 +102,63 @@ def _open_child_session_db(parent_agent) -> Any:
         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
     return None
 
+def _apply_agent_definition(child, role_name: str, parent_agent) -> None:
+    """Apply agent definition (toolsets, model, body) to a child agent (Phase 4).
+
+    Loads the agent definition for ``role_name`` and applies:
+    - body → child._agent_definition_body (read by system_prompt.py)
+    - toolsets → restrict child's enabled_toolsets (intersection with parent's)
+    - model → override child's model
+
+    If no definition is found, does nothing (R8.2 fallback).
+    """
+    try:
+        from agent.agent_definition import get_loader
+        loader = get_loader()
+        definition = loader.load(role_name)
+    except Exception as exc:
+        logger.debug("agent_definition: load failed for %r: %s", role_name, exc)
+        return
+
+    if definition is None:
+        return
+
+    child._agent_definition_body = definition.body
+
+    if definition.toolsets:
+        parent_toolsets = set(getattr(parent_agent, "enabled_toolsets", []) or [])
+        restricted = list(parent_toolsets & set(definition.toolsets))
+        if restricted:
+            child.enabled_toolsets = restricted
+
+    if definition.model:
+        child.model = definition.model
+
+    # Phase 5 — per-agent MCP servers (R9.1, R9.3, R9.4)
+    if definition.mcp_servers:
+        try:
+            # Split modules (Sep 2026): config loader + registration live in
+            # siblings; the tools.mcp_tool facade path is plugin-compat only.
+            from tools.mcp_tool_config import _load_mcp_config
+            from tools.mcp_tool_discovery import register_mcp_servers
+            all_mcp = _load_mcp_config()
+            child_mcp = {
+                name: cfg for name, cfg in all_mcp.items()
+                if name in definition.mcp_servers
+            }
+            missing = set(definition.mcp_servers) - set(child_mcp.keys())
+            if missing:
+                logger.warning(
+                    "agent_definition: MCP servers not in config: %s",
+                    ", ".join(sorted(missing)),
+                )
+            if child_mcp:
+                register_mcp_servers(child_mcp)
+                child._agent_mcp_servers = list(child_mcp.keys())
+        except Exception as exc:
+            logger.debug("agent_definition: MCP connect failed: %s", exc)
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -123,6 +180,9 @@ def _build_child_agent(
     override_acp_args: Optional[List[str]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    # Optional git worktree path; when set, overrides the child's workspace
+    # hint so the child operates on an isolated repo copy (isolation feature).
+    worktree_path: Optional[str] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -142,8 +202,12 @@ def _build_child_agent(
 
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    workspace_hint = _resolve_workspace_hint(parent_agent)
+    if worktree_path:
+        # Isolation override: child runs against the isolated worktree copy.
+        workspace_hint = worktree_path
     child_prompt = _build_child_system_prompt(
-        goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
+        goal, context, workspace_path=workspace_hint, role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -294,12 +358,35 @@ def _run_single_child(
             preview=str(exc), summary=str(exc), status="failed",
         )
     finally:
+        # Phase 5 — R10.2 (my-patches): cleanup child's per-agent MCP servers
+        # (best-effort) so per-child MCP connections don't outlive the child.
+        _child_mcp = getattr(child, "_agent_mcp_servers", None)
+        if _child_mcp:
+            try:
+                from tools.mcp_tool import _servers, _lock as _mcp_lock
+                from tools.registry import registry as _reg
+                with _mcp_lock:
+                    for _srv in _child_mcp:
+                        _task = _servers.pop(_srv, None)
+                        if _task is not None:
+                            for _tn in getattr(_task, "_registered_tool_names", []):
+                                try:
+                                    _reg.deregister(_tn)
+                                except Exception:
+                                    pass
+                            try:
+                                _task._shutdown_event.set()
+                            except Exception:
+                                pass
+            except Exception:
+                pass
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, live_deleg_id: Optional[str], live_writers: list,
+    effective_mode: str = "fresh",
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -341,6 +428,16 @@ def _build_children(
             _ident_ref = getattr(child, "_progress_identity_ref", None)
             if isinstance(_ident_ref, dict):
                 _ident_ref["delegation_id"] = live_deleg_id
+        # Delegation v2 — fork mode: child inherits parent's rendered system
+        # prompt (byte-exact for cache sharing) + conversation history. The
+        # goal is a directive, not a briefing (R4.1–R4.4).
+        if effective_mode == "fork":
+            child._cached_system_prompt = getattr(
+                parent_agent, "_cached_system_prompt", ""
+            )
+            child._fork_parent_messages = list(
+                getattr(parent_agent, "_session_messages", [])
+            )
         children.append((i, t, child))
     return children, None
 
@@ -350,6 +447,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
     message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
+    isolation: Optional[str] = None, resume: Optional[str] = None, mode: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -372,9 +470,14 @@ def delegate_task(
         )
 
     top_role = _normalize_role(role)
-    # background applies to single tasks AND batches: a batch is ONE async unit
-    # that joins on every child and re-enters as a single consolidated message.
-    background = is_truthy_value(background, default=False) if background is not None else False
+
+    # ── Delegation v2: mode normalization + mutual exclusion ──
+    effective_mode = (mode or "fresh").strip().lower()
+    if effective_mode not in ("fresh", "fork"):
+        return tool_error(f"Invalid mode '{mode}'. Use 'fresh' or 'fork'.")
+
+    if resume and effective_mode == "fork":
+        return tool_error("Cannot fork and resume simultaneously. Choose one.")
 
     depth = getattr(parent_agent, "_delegate_depth", 0)
     max_spawn = _get_max_spawn_depth()
@@ -402,6 +505,54 @@ def delegate_task(
         # Explicit-pin preflight failures (e.g. pinned delegation.command missing from PATH) refuse the
         # spawn loudly (#80450).
         return tool_error(str(exc))
+
+    # ── Delegation v2: config gates + resume dispatch ──
+    _resume_enabled = bool(cfg.get("resume_enabled", True))
+    _fork_enabled = bool(cfg.get("fork_enabled", False))
+
+    if resume and not _resume_enabled:
+        return tool_error(
+            "Subagent resume is disabled (delegation.resume_enabled=false)."
+        )
+    if effective_mode == "fork" and not _fork_enabled:
+        return tool_error(
+            "Fork mode is disabled (delegation.fork_enabled=false). "
+            "Enable it in config.yaml to use context-sharing delegation."
+        )
+
+    # Resume path: load a completed subagent's session and continue it.
+    if resume:
+        if not goal or not goal.strip():
+            return tool_error(
+                "Resume requires a 'goal' (the new directive for the resumed subagent)."
+            )
+        return _resume_child_session(
+            subagent_id=resume,
+            goal=goal,
+            parent_agent=parent_agent,
+            cfg=cfg,
+            creds=creds,
+            effective_max_iter=default_max_iter,
+            context=context,
+        )
+
+    # Fork-mode: validate provider supports prompt caching.
+    if effective_mode == "fork":
+        _parent_provider = (
+            creds.get("provider") or getattr(parent_agent, "provider", "") or ""
+        ).lower()
+        _cache_providers = set(
+            cfg.get("fork_cache_providers", ["anthropic", "openai", "google"])
+        )
+        if _parent_provider not in _cache_providers:
+            return tool_error(
+                f"Fork mode requires a provider with prompt caching. "
+                f"Current provider: {_parent_provider}. "
+                f"Use mode='fresh' instead, or add '{_parent_provider}' to "
+                f"delegation.fork_cache_providers in config.yaml."
+            )
+
+    # Normalize to task list
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
@@ -421,7 +572,7 @@ def delegate_task(
 
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        live_deleg_id=live_deleg_id, live_writers=live_writers,
+        live_deleg_id=live_deleg_id, live_writers=live_writers, effective_mode=effective_mode,
     )
     if err:
         return tool_error(err)
@@ -430,6 +581,106 @@ def delegate_task(
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
     )
     return _run_batch(batch, background)
+
+
+def _resume_child_session(
+    subagent_id: str,
+    goal: str,
+    parent_agent,
+    cfg: dict,
+    creds: dict,
+    effective_max_iter: int,
+    context: Optional[str] = None,
+) -> str:
+    """Load a completed subagent's session and continue it with a new goal.
+
+    Implements R3 (subagent resume): the child inherits the prior session's
+    messages as conversation_history and receives the new goal as a
+    user_message. Only subagents spawned by the current parent session
+    that have completed (not still running) can be resumed.
+    """
+    # R3.5: reject if still running
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+    if record and record.get("status") == "running":
+        return tool_error(
+            f"Subagent {subagent_id} is still running. "
+            "Wait for it to complete or interrupt it first."
+        )
+
+    # R3.1: load prior session messages from SessionDB
+    session_db = getattr(parent_agent, "_session_db", None)
+    if session_db is None:
+        return tool_error(
+            f"Cannot resume: no session database available. "
+            f"Subagent {subagent_id} session is not recoverable."
+        )
+
+    prior_messages: list = []
+    try:
+        prior_messages = session_db.get_messages(subagent_id)
+    except Exception as exc:
+        logger.debug("resume: get_messages failed for %s: %s", subagent_id, exc)
+
+    # R3.4: session not found
+    if not prior_messages:
+        return tool_error(
+            f"Cannot resume: subagent session {subagent_id} not found. "
+            "It may have been spawned by a different session or expired."
+        )
+
+    # R3.3: validate parent session ownership
+    parent_session_id = getattr(parent_agent, "session_id", "")
+    try:
+        session_row = session_db.get_session(subagent_id)
+        if session_row:
+            source = session_row.get("source", "") or ""
+            if parent_session_id and parent_session_id not in source:
+                return tool_error(
+                    f"Cannot resume: subagent {subagent_id} was not spawned "
+                    f"by this session ({parent_session_id})."
+                )
+    except Exception:
+        pass  # fail-open if session row lookup fails
+
+    # R3.6: recover role from registry or default to leaf
+    prior_role = "leaf"
+    if record:
+        prior_role = record.get("role", "leaf")
+    effective_role = _normalize_role(prior_role)
+
+    # Build child with the same credential bundle as a fresh delegation
+    child = _build_child_agent(
+        task_index=0,
+        goal=goal,
+        context=context,
+        toolsets=None,
+        model=creds["model"],
+        max_iterations=effective_max_iter,
+        task_count=1,
+        parent_agent=parent_agent,
+        override_provider=creds["provider"],
+        override_base_url=creds["base_url"],
+        override_api_key=creds["api_key"],
+        override_api_mode=creds["api_mode"],
+        override_request_overrides=creds.get("request_overrides"),
+        override_max_tokens=creds.get("max_output_tokens"),
+        override_acp_command=creds.get("command"),
+        override_acp_args=creds.get("args"),
+        role=effective_role,
+    )
+
+    # Stash prior messages so _run_single_child passes them as
+    # conversation_history to run_conversation — the child continues
+    # from the prior session's context rather than starting fresh.
+    child._resume_history = prior_messages
+
+    result = _run_single_child(0, goal, child, parent_agent)
+
+    # R3.2: tag result with resumed_from
+    if isinstance(result, dict):
+        result["resumed_from"] = subagent_id
+    return json.dumps({"results": [result]})
 
 
 # ── OpenAI function-calling schema ──────────────────────────────────────────
@@ -488,10 +739,16 @@ def _build_tasks_param_description() -> str:
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
-        f"The task(s), up to {max_children} in parallel for this user (set "
-        "via delegation.max_concurrent_children). Each entry spawns one "
-        "subagent with isolated context and terminal session; a single task "
-        "is a one-entry array. Required when spawning."
+        f"Batch mode: tasks to run in parallel (up to {max_children} for this "
+        f"user, set via delegation.max_concurrent_children). Each gets "
+        "its own subagent with isolated context and terminal session. "
+        "When provided, top-level goal/context/role are ignored. "
+        "CHAIN MODE: if any goal contains the literal token {previous}, the "
+        "batch runs SEQUENTIALLY in task order and each {previous} occurrence "
+        "is replaced by the preceding task's summary — use it to build "
+        "pipelines (research → draft → review) without a parent round-trip. "
+        "A failed previous step substitutes a failure notice so later steps "
+        "can degrade gracefully."
     )
 
 def _build_dynamic_schema_overrides() -> dict:
@@ -569,6 +826,27 @@ DELEGATE_TASK_SCHEMA = {
                 "For action='steer': the course correction, appended to "
                 "the child's next tool result mid-run. Be directive and specific.",
             ),
+            "resume": {
+                "type": "string",
+                "description": (
+                    "Resume a previously completed subagent by its subagent_id. "
+                    "The child inherits the prior session's messages and continues "
+                    "with the new goal. Only works for subagents spawned by the "
+                    "current session that have completed (not still running). "
+                    "Mutually exclusive with mode='fork'."
+                ),
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["fresh", "fork"],
+                "description": (
+                    "fresh (default): child starts with zero context. "
+                    "fork: child inherits the parent's conversation history and "
+                    "system prompt (shares prompt cache — cheaper for research "
+                    "tasks). Requires a provider with prompt caching. Mutually "
+                    "exclusive with resume."
+                ),
+            },
         },
         "required": [],
     },
@@ -605,10 +883,15 @@ registry.register(
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
+        resume=args.get("resume"),
+        mode=args.get("mode"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
+    is_read_only=False,
+    is_destructive=False,
+    is_concurrency_safe=False,
 )
 
 
