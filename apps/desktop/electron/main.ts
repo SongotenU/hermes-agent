@@ -895,6 +895,16 @@ const DESKTOP_LOG_MAX_BYTES = 10 * 1024 * 1024
 const DESKTOP_LOG_BACKUP_COUNT = 3
 const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
 const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
+// Mutable log state must be initialized before ANY module-init code calls
+// rememberLog(). Early boot writers (e.g. readPersistedPoolLimits, invoked
+// at module scope well below) log during module evaluation; if these are
+// declared later, `hermesLog.push` runs against an uninitialized binding and
+// the desktop shell dies on first launch with a "Cannot read properties of
+// undefined (reading 'push')" error dialog.
+const hermesLog = []
+let desktopLogBuffer = ''
+let desktopLogFlushTimer = null
+let desktopLogFlushPromise = Promise.resolve()
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 // Automated teardown (Playwright's app.close(), harness scripts) quits with
