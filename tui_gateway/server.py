@@ -447,7 +447,16 @@ def _profile_db(params: dict | None = None):
 def _response_profile_name(profile: str | None = None) -> str:
     """Profile name for session.* payloads: the requested real non-launch profile, else the launch one."""
     name = (profile or "").strip()
-    return name if name and _profile_home(name) is not None else _current_profile_name()
+    if not name:
+        return _current_profile_name()
+    try:
+        resolved = _profile_home(name)
+    except (FileNotFoundError, ValueError):
+        # A session dict can carry the *default* home, whose basename is the install
+        # dir (e.g. ".hermes") — not a profile id. Any unresolvable name means "not a
+        # real named profile", which by contract falls back to the launch profile.
+        return _current_profile_name()
+    return name if resolved is not None else _current_profile_name()
 
 
 def _db_unavailable_error(rid, *, code: int):
