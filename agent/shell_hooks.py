@@ -213,7 +213,15 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
         return []
     specs: List[ShellHookSpec] = []
     for event_name, entries in hooks_cfg.items():
-        if event_name in ("output_spill", "outbound"):  # reserved non-event sub-sections under `hooks:`
+        # Reserved sub-keys that aren't event names — skip silently. These
+        # are config sub-sections nested under `hooks:` for related
+        # functionality (e.g. output-spill budgets, outbound webhooks,
+        # hook-chains settings — the latter parsed by agent/outbound_webhooks.py).
+        if event_name in (
+            "output_spill", "outbound",
+            "async_hooks", "chains_config_path", "cooldown_default",
+            "fail_closed", "max_chain_depth",
+        ):
             continue
         if event_name in SHELL_UNSUPPORTED_HOOKS:  # _parse_response has no channel for these directives — refuse loudly
             logger.warning("hook event %r is Python-plugin-only: shell hooks cannot return its directive, "
