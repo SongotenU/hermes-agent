@@ -1819,6 +1819,15 @@ DEFAULT_CONFIG = {
         # The flag is the user's off switch; availability additionally requires
         # the portal sign-in every managed tool gates on.
         "connectors": {"enabled": True},
+        "callback_deadlines": {
+            # Per-callback deadline budgets in seconds. When a callback exceeds
+            # its budget, it is cut (fail-open for observers, fail-closed for
+            # veto hooks when Phase 5 lands). None/disabled = no enforcement.
+            "check_fn": 5.0,
+            "pre_hook": 10.0,
+            "post_hook": 10.0,
+            # "handler": not set globally — per-tool declares its own timeout
+        },
     },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
