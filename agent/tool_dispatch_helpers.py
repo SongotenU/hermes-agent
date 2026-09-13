@@ -161,6 +161,28 @@ def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, Lis
     return None
 
 
+def _is_tool_parallel_safe(tool_name: str) -> bool:
+    """Registry-first parallel safety check (Phase 3 R6.2).
+
+    Explicit registry metadata (is_concurrency_safe) wins over the legacy
+    hardcoded frozenset. A tool with is_concurrency_safe=False is never
+    parallel even if in the legacy frozenset (R6.4). Bridge lookups are
+    stateless catalog reads and always parallel-safe.
+    """
+    try:
+        from tools.registry import registry as _registry
+        safety = _registry.get_tool_safety(tool_name)
+        if safety["is_concurrency_safe"] is not None:
+            return safety["is_concurrency_safe"]
+    except Exception:
+        pass
+    return (
+        tool_name in _PARALLEL_SAFE_BRIDGE_LOOKUPS
+        or tool_name in _PARALLEL_SAFE_TOOLS
+        or _is_mcp_tool_parallel_safe(tool_name)
+    )
+
+
 def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
     """Split a tool-call batch into ordered ``("parallel"|"sequential", calls)`` segments.
 
@@ -202,6 +224,9 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             for scoped_path in scoped_paths
             for existing, existing_is_writer in reserved_paths
         ):
+            # Same-subtree conflict inside this run: close it so this call starts a
+            # fresh run AFTER the conflicting one lands. Reader↔reader overlap never
+            # conflicts — concurrent reads of the same subtree commute.
             _close_parallel()
         reserved_paths.extend((p, is_writer) for p in scoped_paths)
         current.append(tool_call)
@@ -544,6 +569,7 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
 __all__ = [
     "_NEVER_PARALLEL_TOOLS", "_PARALLEL_SAFE_TOOLS", "_PATH_SCOPED_TOOLS", "_PATH_SCOPED_READERS",
     "_PATH_SCOPED_WRITERS", "_DESTRUCTIVE_PATTERNS", "_REDIRECT_OVERWRITE", "_is_destructive_command",
+    "_is_tool_parallel_safe",
     "_plan_tool_batch_segments", "_should_parallelize_tool_batch", "_canonical_path",
     "_extract_parallel_scope_path", "_extract_parallel_scope_paths", "_paths_overlap",
     "_is_multimodal_tool_result", "_multimodal_text_summary", "_append_subdir_hint_to_multimodal",
