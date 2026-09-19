@@ -466,6 +466,7 @@ def _build_children(
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
+        _raw_role = t.get("role") or top_role
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
@@ -473,7 +474,7 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(_raw_role), **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -506,6 +507,10 @@ def _build_children(
             child._fork_parent_messages = list(
                 getattr(parent_agent, "_session_messages", [])
             )
+        # Phase 4 (R8.2): a caller role that names a definition (agents/<role>.md)
+        # applies its toolsets/model/body to the child. The capability role above
+        # stays depth-derived; unknown or absent names leave the child unchanged.
+        _apply_agent_definition(child, str(_raw_role).strip().lower() if _raw_role else "", parent_agent)
         children.append((i, t, child))
     return children, None
 

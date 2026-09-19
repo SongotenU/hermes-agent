@@ -139,3 +139,60 @@ class TestApplyAgentDefinition:
             _apply_agent_definition(child, "worker", parent)
 
         assert child._agent_definition_body == "You are a hands-on engineer."
+
+
+class TestDefinitionWiringAtSpawn:
+    """Invariant: _build_children must apply a definition when the task role
+    names one (the call site was once silently dropped from the spawn path)."""
+
+    @staticmethod
+    def _run_build(task_list):
+        from tools import delegate_tool
+
+        built = []
+
+        def fake_build(**kwargs):
+            child = SimpleNamespace(
+                enabled_toolsets=["web"], model="parent-model",
+                tool_progress_callback=None,
+            )
+            built.append(child)
+            return child
+
+        with patch.object(delegate_tool, "_build_child_preserving_parent_tools", fake_build):
+            children, err = delegate_tool._build_children(
+                task_list, [None] * len(task_list),
+                {"provider": None, "base_url": None, "api_key": None, "api_mode": None, "model": None},
+                top_role="leaf", max_iterations=10,
+                parent_agent=SimpleNamespace(), routing_cfg={},
+                live_deleg_id=None, live_writers=[],
+            )
+        assert err is None
+        return children
+
+    def test_named_role_applies_definition(self):
+        from agent.agent_definition import AgentDefinition
+
+        mock_def = AgentDefinition(
+            name="researcher", toolsets=None, model=None,
+            body="You are a researcher.",
+        )
+        with patch("agent.agent_definition.get_loader") as mock_get_loader:
+            mock_loader = MagicMock()
+            mock_loader.load.return_value = mock_def
+            mock_get_loader.return_value = mock_loader
+            children = self._run_build([{"goal": "g", "role": "researcher"}])
+
+        child = children[0][2]
+        assert child._agent_definition_body == "You are a researcher."
+
+    def test_unknown_role_leaves_child_unchanged(self):
+        with patch("agent.agent_definition.get_loader") as mock_get_loader:
+            mock_loader = MagicMock()
+            mock_loader.load.return_value = None
+            mock_get_loader.return_value = mock_loader
+            children = self._run_build([{"goal": "g"}])
+
+        child = children[0][2]
+        assert not hasattr(child, "_agent_definition_body")
+        assert child.model == "parent-model"
