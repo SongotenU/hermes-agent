@@ -206,6 +206,20 @@ def finish_text_response(
                 codex_ack_continuations + 1,
             )
         codex_ack_continuations += 1
+        # Diminishing-returns budget (my-patches): stop when continuations keep
+        # nudging without producing new completion tokens.
+        from agent.continuation_budget import continuation_budget_stop_for
+
+        if continuation_budget_stop_for(agent, None):
+            agent._persist_session(messages, conversation_history)
+            return _verdict("return", {
+                "final_response": final_response or None,
+                "messages": messages,
+                "api_calls": api_call_count,
+                "completed": False,
+                "partial": True,
+                "stop_reason": "diminishing_returns",
+            })
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
         if _promoted:
             # Same sidecar as the final row: the wire copy must carry the promoted text, not only
