@@ -195,6 +195,12 @@ class ToolEntry:
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
+    # my-patches concurrency/behavior metadata; callback_deadline is the Phase 3
+    # per-tool budget map ({"check_fn": seconds, ...}).
+    is_read_only: bool | None = None
+    is_destructive: bool | None = None
+    is_concurrency_safe: bool | None = None
+    callback_deadline: dict | None = None
 
 
 class _PluginOverridePolicy:
@@ -402,6 +408,27 @@ def _memo_check(fn: Callable, memo: Dict[Callable, bool]) -> bool:
     return memo[fn]
 
 
+def _check_fn_cached_with_deadline(fn: Callable, tool_entry=None) -> bool:
+    """Run check_fn with deadline budget enforcement (Phase 3 R1, my-patches).
+
+    If the tool_entry carries a ``callback_deadline`` budget for check_fn,
+    enforce it; on deadline expiry fail OPEN (return True = tool allowed) —
+    a slow check must never silently disable a working tool.
+    """
+    deadline_s = None
+    if tool_entry is not None:
+        deadline_s = getattr(tool_entry, "callback_deadline", None) or {}
+        deadline_s = deadline_s.get("check_fn")
+    if deadline_s is None:
+        return _check_fn_cached(fn)
+    from agent.tool_executor import _run_sync_with_deadline
+
+    result = _run_sync_with_deadline(fn, deadline_s, getattr(tool_entry, "name", "?"), "check_fn")
+    if result is None:
+        return True
+    return result
+
+
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results (after config changes like ``hermes tools enable``)."""
     with _check_fn_cache_lock:
@@ -505,6 +532,44 @@ class ToolRegistry:
         """Local slot state only — no global fallback."""
         with self._lock:
             return self._slot(scope).get(name)
+
+    def get_tool_safety(self, name: str) -> dict:
+        """Return safety metadata for a tool (Phase 3 R5.5).
+
+        When the tool has explicit is_concurrency_safe metadata, source='registry'.
+        Otherwise source='heuristic' — callers check source to distinguish.
+        """
+        entry = self.get_entry(name)
+        if entry is None:
+            return {"is_read_only": None, "is_destructive": None,
+                    "is_concurrency_safe": None, "source": "heuristic"}
+        if entry.is_concurrency_safe is not None:
+            return {"is_read_only": entry.is_read_only,
+                    "is_destructive": entry.is_destructive,
+                    "is_concurrency_safe": entry.is_concurrency_safe,
+                    "source": "registry"}
+        return {"is_read_only": entry.is_read_only,
+                "is_destructive": entry.is_destructive,
+                "is_concurrency_safe": None, "source": "heuristic"}
+
+    def get_tool_safety(self, name: str) -> dict:
+        """Return safety metadata for a tool (Phase 3 R5.5).
+
+        When the tool has explicit is_concurrency_safe metadata, source='registry'.
+        Otherwise source='heuristic' — callers check source to distinguish.
+        """
+        entry = self.get_entry(name)
+        if entry is None:
+            return {"is_read_only": None, "is_destructive": None,
+                    "is_concurrency_safe": None, "source": "heuristic"}
+        if entry.is_concurrency_safe is not None:
+            return {"is_read_only": entry.is_read_only,
+                    "is_destructive": entry.is_destructive,
+                    "is_concurrency_safe": entry.is_concurrency_safe,
+                    "source": "registry"}
+        return {"is_read_only": entry.is_read_only,
+                "is_destructive": entry.is_destructive,
+                "is_concurrency_safe": None, "source": "heuristic"}
 
     def get_registered_toolset_names(self) -> List[str]:
         return sorted(self._grouped(self._snapshot_entries()))
@@ -657,6 +722,8 @@ class ToolRegistry:
         check_fn: Callable = None, requires_env: list = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None, override: bool = False,
+        is_read_only: bool | None = None, is_destructive: bool | None = None,
+        is_concurrency_safe: bool | None = None, callback_deadline: dict | None = None,
         scope: Optional[str] = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
@@ -721,7 +788,11 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
-                dynamic_schema_overrides=dynamic_schema_overrides)
+                dynamic_schema_overrides=dynamic_schema_overrides,
+                is_read_only=is_read_only,
+                is_destructive=is_destructive,
+                is_concurrency_safe=is_concurrency_safe,
+                callback_deadline=callback_deadline)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,
