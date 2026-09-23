@@ -674,6 +674,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # index is built; this slot holds its position.
     _help_guidance_slot = len(stable_parts)
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
+
+    # Phase 4: per-role agent definition body (appended after identity, before
+    # behavioral guidance).  Only present when delegate_task applied a definition.
+    _agent_def_body = getattr(agent, "_agent_definition_body", None)
+    if _agent_def_body:
+        stable_parts.append(_agent_def_body)
+
     stable_parts.extend(_guidance_parts(agent))
     skills_prompt = _skills_prompt(agent)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
