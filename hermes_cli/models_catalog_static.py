@@ -46,9 +46,17 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "stepfun/step-3.7-flash", "nvidia/nemotron-3-super-120b-a12b", "meta/muse-spark-1.2",
         "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "sakana/fugu-ultra",
         "openrouter/pareto-code", "thinkingmachines/inkling:free", "thinkingmachines/inkling-small:free",
-        "minimax/minimax-m3:free", "z-ai/glm-5.2:free", "poolside/laguna-s-2.1:free", "poolside/laguna-xs-2.1:free",
+        "minimax/minimax-m3:free", "z-ai/glm-5.2:free", "poolside/laguna-m.1:free",
+        "poolside/laguna-s-2.1:free", "poolside/laguna-xs-2.1:free",
+        "tencent/hy3:free",
         "nvidia/nemotron-3-super-120b-a12b:free", "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nvidia/nemotron-3.5-lightning:free", "stealth/union-alpha",
+        "nvidia/nemotron-3-nano-30b-a3b:free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "nvidia/nemotron-3.5-lightning:free", "nvidia/nemotron-3.5-content-safety:free",
+        "nvidia/nemotron-nano-12b-v2-vl:free", "nvidia/nemotron-nano-9b-v2:free",
+        "cohere/north-mini-code:free", "dots-studio/dots-3-note-preview:free",
+        "google/gemma-4-26b-a4b-it:free", "google/gemma-4-31b-it:free",
+        "openai/gpt-oss-20b:free", "inclusionai/ring-2.6-1t:free",
+        "stealth/union-alpha",
     )
 ]
 
