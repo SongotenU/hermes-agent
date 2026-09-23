@@ -271,6 +271,23 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             agent._vprint(f"{agent.log_prefix}↻ Stream interrupted — requesting continuation ({n}/4)...", diagnostic=True)
         else:
             agent._vprint(f"{agent.log_prefix}↻ Requesting continuation ({n}/4)...", diagnostic=True)
+        # Diminishing-returns budget (my-patches): stop when continuations keep
+        # nudging without producing new completion tokens.
+        from agent.continuation_budget import continuation_budget_stop_for
+
+        if continuation_budget_stop_for(agent, st):
+            partial_response = agent._strip_think_blocks(
+                _join_truncated_parts(st.truncated_response_parts)
+            ).strip()
+            agent._persist_session(messages, st.conversation_history)
+            return st.done("return", {
+                "final_response": partial_response or None,
+                "messages": messages,
+                "api_calls": st.api_call_count,
+                "completed": False,
+                "partial": True,
+                "stop_reason": "diminishing_returns",
+            })
         append_message(messages, {
             "role": "user", "content": _get_continuation_prompt(st.is_stub, _dropped_tools),
             "_length_continuation_nudge": True,
@@ -548,6 +565,17 @@ def continue_codex_incomplete(
             return CODEX_FALLBACK_ACTIVATED
         # No fallback left: fall through to the terminal sentinel.
     elif n < 3 or reasoning_only:
+        # Diminishing-returns budget (my-patches): stop when continuations keep
+        # nudging without producing new completion tokens. Checked before the
+        # retry ladder so a stall hands over to the fallback ladder above first.
+        from agent.continuation_budget import continuation_budget_stop_for
+
+        if continuation_budget_stop_for(agent, None):
+            agent._codex_incomplete_retries = 0
+            agent._persist_session(messages, conversation_history)
+            return partial_result(
+                messages, api_call_count, "Stopped: diminishing returns (continuations without new tokens)"
+            )
         # A reasoning-only streak below 3 continues even once partials used up the aggregate
         # cap, so the mixed partial-then-stall variant reaches the ladder above.
         # If the interim has nothing the Responses converter will replay, a bare retry is
