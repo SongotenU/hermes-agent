@@ -1,11 +1,46 @@
 """Tests for Phase 3 — per-tool safety metadata + registry-driven parallel dispatch."""
 
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
+
 # Import tool modules to trigger registration
 import tools.file_tools  # noqa: F401
 import tools.delegate_tool  # noqa: F401
 
 from tools.registry import registry
-from agent.tool_dispatch_helpers import _is_tool_parallel_safe, _PARALLEL_SAFE_TOOLS
+from agent.tool_dispatch_helpers import (
+    _batch_admission,
+    _is_tool_parallel_safe,
+    _PARALLEL_SAFE_TOOLS,
+)
+
+
+def _tool_call(name, arguments=None):
+    return SimpleNamespace(
+        id="call_contract_test",
+        type="function",
+        function=SimpleNamespace(name=name, arguments=json.dumps(arguments or {})),
+    )
+
+
+def test_batch_admission_admits_legacy_frozenset_member():
+    """Control: an unscoped frozenset member with no registry metadata is admitted."""
+    assert "ha_get_state" in _PARALLEL_SAFE_TOOLS
+    admitted = _batch_admission(_tool_call("ha_get_state"), None)
+    assert admitted is not None
+    assert admitted[0] == "ha_get_state"
+    assert admitted[2] is False
+
+
+def test_batch_admission_registry_false_overrides_frozenset():
+    """R6.2/R6.4 red-on-base guard: _batch_admission must consult registry metadata
+    through _is_tool_parallel_safe — an explicit is_concurrency_safe=False wins
+    over the legacy frozenset and turns the call into a sequential barrier."""
+    assert "ha_get_state" in _PARALLEL_SAFE_TOOLS  # legacy would admit it
+    forced = {"source": "registry", "is_read_only": None, "is_concurrency_safe": False}
+    with patch.object(registry, "get_tool_safety", return_value=forced):
+        assert _batch_admission(_tool_call("ha_get_state"), None) is None
 
 
 def test_registry_safety_explicit_read_file():

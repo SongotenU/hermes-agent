@@ -156,7 +156,10 @@ def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, Lis
     if name in _PATH_SCOPED_TOOLS:
         scoped = _extract_parallel_scope_paths(name, args, execution_cwd=execution_cwd)
         return (name, scoped, name in _PATH_SCOPED_WRITERS) if scoped else None
-    if name in _PARALLEL_SAFE_TOOLS or name in _PARALLEL_SAFE_BRIDGE_LOOKUPS or _is_mcp_tool_parallel_safe(name):
+    # Registry-first (R6.2): explicit is_concurrency_safe metadata wins over the
+    # legacy frozensets; _is_tool_parallel_safe falls back to them when the
+    # registry has no opinion for this name.
+    if _is_tool_parallel_safe(name):
         return name, [], False
     return None
 
