@@ -559,25 +559,6 @@ class ToolRegistry:
                 "is_destructive": entry.is_destructive,
                 "is_concurrency_safe": None, "source": "heuristic"}
 
-    def get_tool_safety(self, name: str) -> dict:
-        """Return safety metadata for a tool (Phase 3 R5.5).
-
-        When the tool has explicit is_concurrency_safe metadata, source='registry'.
-        Otherwise source='heuristic' — callers check source to distinguish.
-        """
-        entry = self.get_entry(name)
-        if entry is None:
-            return {"is_read_only": None, "is_destructive": None,
-                    "is_concurrency_safe": None, "source": "heuristic"}
-        if entry.is_concurrency_safe is not None:
-            return {"is_read_only": entry.is_read_only,
-                    "is_destructive": entry.is_destructive,
-                    "is_concurrency_safe": entry.is_concurrency_safe,
-                    "source": "registry"}
-        return {"is_read_only": entry.is_read_only,
-                "is_destructive": entry.is_destructive,
-                "is_concurrency_safe": None, "source": "heuristic"}
-
     def get_registered_toolset_names(self) -> List[str]:
         return sorted(self._grouped(self._snapshot_entries()))
 
@@ -909,13 +890,12 @@ class ToolRegistry:
         """OpenAI-format schemas for the requested tools whose ``check_fn`` passes (or is
         absent). Probes use the ~30 s TTL cache so ``hermes tools enable`` lands quickly."""
         result = []
-        check_results: Dict[Callable, bool] = {}
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
             if not entry:
                 continue
-            if entry.check_fn and not _memo_check(entry.check_fn, check_results):
+            if entry.check_fn and not _check_fn_cached_with_deadline(entry.check_fn, entry):
                 if not quiet:
                     logger.debug("Tool %s unavailable (check failed)", name)
                 continue
