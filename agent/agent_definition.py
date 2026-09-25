@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import yaml
+from agent.skill_utils import yaml_load
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +58,8 @@ def _parse_agent_file(path: Path) -> Optional[AgentDefinition]:
     meta: dict = {}
     if frontmatter_text:
         try:
-            meta = yaml.safe_load(frontmatter_text) or {}
-        except yaml.YAMLError as exc:
+            meta = yaml_load(frontmatter_text) or {}
+        except Exception as exc:  # noqa: BLE001 — malformed YAML degrades to no definition
             logger.warning("agent_definition: YAML parse error in %s: %s", path, exc)
             return None
 
@@ -80,11 +80,14 @@ class AgentDefinitionLoader:
         self._cache: Optional[Dict[str, AgentDefinition]] = None
 
     def _source_dirs(self) -> List[Path]:
+        from hermes_constants import get_hermes_home
+
         dirs: List[Path] = []
-        user_dir = Path.home() / ".hermes" / "hermes-agent" / "agents"
+        home = get_hermes_home()
+        user_dir = home / "hermes-agent" / "agents"
         if user_dir.is_dir():
             dirs.append(user_dir)
-        plugin_base = Path.home() / ".hermes" / "plugins"
+        plugin_base = home / "plugins"
         if plugin_base.is_dir():
             for p in sorted(plugin_base.iterdir()):
                 ag = p / "agents"

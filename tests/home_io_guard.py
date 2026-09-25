@@ -26,6 +26,15 @@ _INTERPRETER_PREFIXES = tuple({
     Path(__file__).resolve().parent.parent,
 })
 
+# hermes_bootstrap's import-time activate_dependencies probes <repo>/../manifest.json
+# (sealed-payload venv detection: a venv shipped beside the checkout). From the default install
+# the checkout's parent IS the Hermes home, so that probe stats ~/.hermes/manifest.json —
+# the repo's own layout detection, not Hermes state. Exempt the metadata-only probe; reads of
+# the manifest's CONTENTS stay guarded.
+_REPO_PARENT_MANIFEST_PROBES = {
+    (Path(__file__).resolve().parent.parent.parent / "manifest.json"),
+}
+
 
 class HomeIOGuard:
     def __init__(self, roots):
@@ -79,10 +88,13 @@ class HomeIOGuard:
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             if any(absolute.is_relative_to(root) for root in roots):
-                self.refuse(value)
+                if not (metadata and absolute in _REPO_PARENT_MANIFEST_PROBES):
+                    self.refuse(value)
+                return
             resolved = absolute.resolve()
             if metadata and resolved in roots:
-                return
+                if resolved in _REPO_PARENT_MANIFEST_PROBES and absolute not in _REPO_PARENT_MANIFEST_PROBES:
+                    return
             # A fixture symlink to the running interpreter resolves into its installation.
             if any(resolved.is_relative_to(prefix) for prefix in _INTERPRETER_PREFIXES):
                 return
