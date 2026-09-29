@@ -2198,6 +2198,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._last_compression_made_progress = False
         # Transient summary errors must not block a fresh session.
         self._summary_failure_cooldown_until = 0.0
+        # Circuit breaker: a fresh session gets a clean breaker.
+        self._consecutive_summary_failures = 0
+        self._breaker_tripped_logged = False
         # True while the local cooldown failed to persist: an empty durable row then means unknown, not cleared.
         self._cooldown_persist_failed = False
         # Callers read this to know compression was attempted but aborted (freeze until manual /compress).
@@ -2489,6 +2492,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # A later stall or timeout records the latest error text but keeps the later of the two clocks. See
         # #96775.
         self._last_summary_error = error
+        # Circuit breaker (R2.1): count consecutive summary failures; quota/auth
+        # errors trip the breaker in one shot (R2.5).
+        _err_text = error or ""
+        if _err_text and _is_summary_access_or_quota_error(Exception(_err_text)):
+            self._consecutive_summary_failures += self._breaker_max_consecutive
+        else:
+            self._consecutive_summary_failures += 1
         cooldown_until = time.time() + max(0.0, self._summary_failure_cooldown_until - time.monotonic())
         if not getattr(self, "_session_db", None) or not getattr(self, "_session_id", ""):
             return
@@ -2519,6 +2529,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._summary_failure_cooldown_until, self._last_summary_error = 0.0, None
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
         self._cooldown_persist_failed = False
+        # Circuit breaker reset (R2.3a): cooldown cleared means we got a clean
+        # shot (success, manual retry, or fresh session) — wipe the consecutive
+        # failure counter too so the breaker re-arms.
+        self._consecutive_summary_failures = 0
+        self._breaker_tripped_logged = False
         ContextCompressor._durable_write(self, "clear_compression_failure_cooldown", "compression failure cooldown clear")
 
     def _compression_cancelled(self) -> bool:
@@ -2782,6 +2797,19 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # Terminal summary failures (access/quota, network, empty content, finish_reason=length): compress()
         # must ABORT and preserve the session regardless of abort_on_summary_failure (see _TERMINAL_SUMMARY_FAILURES).
         self._clear_terminal_summary_failures()
+        # Compaction circuit breaker state (session-terminal; reset via cooldown clear).
+        self._consecutive_summary_failures: int = 0
+        self._breaker_tripped_logged: bool = False
+        self._breaker_enabled: bool = True
+        self._breaker_max_consecutive: int = 3
+        try:
+            from hermes_cli.config import load_config as _load_config
+
+            _cb_cfg = ((_load_config() or {}).get('agent', {}).get('compaction', {})) or {}
+            self._breaker_enabled = bool(_cb_cfg.get('circuit_breaker_enabled', True))
+            self._breaker_max_consecutive = int(_cb_cfg.get('max_consecutive_failures', 3))
+        except Exception:
+            pass
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -2942,6 +2970,22 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 if not self.quiet_mode:
                     logger.debug("Compression deferred — %s for %.0fs more", what, remaining)
                 return True
+        # Circuit breaker (R2.2): session-terminal — trip when consecutive summary
+        # failures exceed the configured max so compress() short-circuits BEFORE any
+        # summary LLM call. No cooldown timer; resets on success/manual /compress.
+        if (
+            self._breaker_enabled
+            and self._consecutive_summary_failures >= self._breaker_max_consecutive
+        ):
+            if not self._breaker_tripped_logged:
+                logger.warning(
+                    "Compaction circuit breaker OPEN after %d consecutive summary "
+                    "failures — session frozen until /new or manual /compress.",
+                    self._consecutive_summary_failures,
+                )
+                self._breaker_tripped_logged = True
+            self._last_compress_aborted = True
+            return True
         # Anti-thrash back-off must not be permanent: after _ANTI_THRASH_RECOVERY_SECONDS blocked, allow ONE
         # probe by dropping counters to 1 strike (persisted). Deadline is armed lazily and persisted on the row.
         if self._tripped():

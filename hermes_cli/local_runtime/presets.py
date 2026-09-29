@@ -57,6 +57,48 @@ def _asset_path(asset) -> "Path | None":
     return path if path.exists() else None
 
 
+def model_overrides_path() -> Path:
+    """User-declared launch extras for models the catalog has never heard of (custom finetunes).
+
+    Read at preset build time, so it survives a preset regeneration; the catalog cannot carry a
+    finetune nobody publishes, but a projector the user points at still buys vision."""
+    from hermes_cli.local_runtime.binaries import runtimes_root
+
+    return runtimes_root() / "model_overrides.json"
+
+
+def load_model_overrides() -> dict:
+    """``model_id -> {"mmproj": "<path>"}``. Empty on any read problem (never blocks a boot)."""
+    try:
+        with open(model_overrides_path(), encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+        return {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
+    except Exception:
+        return {}
+
+
+def _override_mmproj_path(model_id: str) -> "Path | None":
+    """Projector declared for a custom model id, or None when absent/unreadable."""
+    raw = (load_model_overrides().get(model_id) or {}).get("mmproj")
+    if not raw:
+        return None
+    path = Path(str(raw)).expanduser()
+    return path if path.is_file() else None
+
+
+def _mmproj_bytes(entry, mmproj_path: "Path | None") -> int:
+    """Projector bytes for the residency budget: the catalog's figure when it has one, else the
+    file's own size (an override projector is real memory even though the catalog never priced it)."""
+    if mmproj_path is None:
+        return 0
+    if entry is not None and entry.mmproj is not None:
+        return entry.mmproj.size_bytes
+    try:
+        return mmproj_path.stat().st_size
+    except OSError:
+        return 0
+
+
 def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhead: int) -> bool:
     """Optional draft never shrinks the advertised window or displaces its GPU buffers.
 
@@ -98,8 +140,10 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
 
     mmproj_path = _asset_path(entry.mmproj) if entry is not None else None
-    fixed_overhead = RUNTIME_OVERHEAD_BYTES + (
-        entry.mmproj.size_bytes if entry is not None and mmproj_path is not None else 0)
+    if mmproj_path is None:
+        # A custom finetune is not a catalog entry, but a user-declared projector still buys vision.
+        mmproj_path = _override_mmproj_path(model_id)
+    fixed_overhead = RUNTIME_OVERHEAD_BYTES + _mmproj_bytes(entry, mmproj_path)
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
                        requested_window=(load_window_overrides().get(model_id)
                                          if requested_window is None else requested_window))
@@ -130,8 +174,9 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     if entry is not None:
         for k, v in (entry.sampling or {}).items():
             keys.setdefault(k, v)
-        if mmproj_path is not None:
-            keys["mmproj"] = str(mmproj_path)
+    if mmproj_path is not None:
+        keys["mmproj"] = str(mmproj_path)
+    if entry is not None:
         draft_path = _asset_path(entry.draft) if decision.spilled else None
         if draft_path is not None and _draft_fits(draft_path, profile, budget, decision.window, plan.overhead_bytes):
             keys["model-draft"] = str(draft_path)
@@ -177,7 +222,10 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
         return None
     entry = entry_for_model(model_id)
     is_mtp = entry.mtp if entry is not None else False
-    mmproj = entry.mmproj.size_bytes if entry is not None and _asset_path(entry.mmproj) else 0
+    mmproj_path = _asset_path(entry.mmproj) if entry is not None else None
+    if mmproj_path is None:
+        mmproj_path = _override_mmproj_path(model_id)
+    mmproj = _mmproj_bytes(entry, mmproj_path)
     plan = plan_launch(profile, budget, mtp_capable=is_mtp,
                        fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj,
                        requested_window=load_window_overrides().get(model_id))
