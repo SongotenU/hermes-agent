@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
+from agent.iteration_budget import IterationBudget
+from agent.continuation_budget import ContinuationBudgetTracker
 from agent.message_metadata import append_message, without_persistence_fields
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
@@ -1439,6 +1441,12 @@ class _LoopState:
     # is set ONLY if it becomes the final response (#65919).
     _pending_verification_response: Any = None
     _pending_verification_response_previewed: bool = False
+    # Diminishing-returns continuation budget (Claude Code tokenBudget.ts port):
+    # per-turn completion tokens + continuation nudges; owned by the turn loop,
+    # consumed by the continuation hooks (length-continuation, codex incomplete,
+    # ack continuations).
+    turn_completion_tokens: int = 0
+    continuation_tracker: Any = None
     # MoA guidance retained across a pre-API compression, rebased next iteration (no second fan-out).
     pending_moa_prepared_request: Any = None
     # Per-iteration slots.
@@ -1617,6 +1625,69 @@ def _run_conversation_turn(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
+    # Diminishing-returns continuation budget (Claude Code tokenBudget.ts port).
+    # Per-turn: tracks continuation nudges + completion-token deltas; stops the
+    # loop when it keeps nudging without producing new tokens. Config comes
+    # from config.yaml agent.loop_budget.* (never env vars, per AGENTS.md).
+    _loop_budget_cfg: Dict[str, Any] = {}
+    try:
+        from hermes_cli.config import load_config as _load_config
+
+        _loop_budget_cfg = (
+            (_load_config() or {}).get("agent", {}).get("loop_budget", {}) or {}
+        )
+    except Exception:
+        _loop_budget_cfg = {}
+    s.continuation_tracker = ContinuationBudgetTracker(
+        min_continuations=int(_loop_budget_cfg.get("min_continuations", 3)),
+        diminishing_threshold=int(
+            _loop_budget_cfg.get("diminishing_token_threshold", 500)
+        ),
+    )
+    _loop_budget_enabled = bool(_loop_budget_cfg.get("enabled", True))
+    # Sink the per-turn completion-token tally through the agent so
+    # agent/turn_usage.py's provider-usage path can add to it without a
+    # circular import back into this module.
+    agent._turn_completion_sink = s
+
+    def _continuation_budget_check(st: Any = None) -> bool:
+        """Shared diminishing-returns gate for every continuation nudge site.
+
+        Records the nudge against the per-turn tracker; True when the loop must
+        stop. On stop the caller is responsible for building its own partial
+        result — this only raises the observability flags.
+        """
+        if not _continuation_budget_stop():
+            return False
+        if st is not None:
+            s._turn_exit_reason = "diminishing_returns"
+        return True
+
+    agent._continuation_budget_check = _continuation_budget_check
+
+    def _continuation_budget_stop() -> bool:
+        """Record a continuation nudge; True when the loop must stop.
+
+        On stop: warn + user-facing status, mirroring the content-filter
+        escalation path's observability pattern.
+        """
+        if not _loop_budget_enabled:
+            return False
+        if not s.continuation_tracker.record_continuation(s.turn_completion_tokens):
+            return False
+        logger.warning(
+            "%sLoop stopped: diminishing returns (%d continuations, <%d tokens "
+            "each this turn)",
+            agent.log_prefix,
+            s.continuation_tracker.continuation_count,
+            s.continuation_tracker.diminishing_threshold,
+        )
+        agent._emit_status(
+            "Stopped: diminishing returns "
+            f"({s.continuation_tracker.continuation_count} continuations, "
+            f"<{s.continuation_tracker.diminishing_threshold} tokens each)"
+        )
+        return True
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":
