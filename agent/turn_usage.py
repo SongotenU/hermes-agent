@@ -174,6 +174,15 @@ def record_response_usage(
     agent.session_prompt_tokens += prompt_tokens
     agent.session_completion_tokens += completion_tokens
     agent.session_total_tokens += total_tokens
+    # Continuation-budget per-turn accumulator (my-patches): the loop installs
+    # a sink state (with ``turn_completion_tokens``) for this turn; consumed by
+    # the diminishing-returns check on each continuation nudge.
+    _sink = getattr(agent, "_turn_completion_sink", None)
+    if _sink is not None:
+        try:
+            _sink.turn_completion_tokens += completion_tokens
+        except AttributeError:
+            pass
     agent.session_input_tokens += canonical_usage.input_tokens
     agent.session_output_tokens += canonical_usage.output_tokens
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
