@@ -8,6 +8,7 @@ observe → commit → project pipeline so the tool-result wire shape is produce
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import contextlib
 import json
@@ -190,6 +191,115 @@ def _resolve_concurrent_tool_timeout() -> float | None:
         default=_DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
         env_var="HERMES_CONCURRENT_TOOL_TIMEOUT_S",
     )
+
+
+# =============================================================================
+# Callback Deadline Budgets (Phase 3 R1)
+# =============================================================================
+
+def _resolve_callback_deadline(tool_entry, kind: str) -> float | None:
+    """Resolve deadline budget for a specific callback kind.
+    
+    Priority: per-tool callback_deadline > global config > None (disabled)
+    
+    Args:
+        tool_entry: ToolEntry with optional callback_deadline dict
+        kind: One of "check_fn", "pre_hook", "post_hook"
+    
+    Returns:
+        Deadline in seconds, or None if not configured (no enforcement)
+    """
+    # 1. Per-tool override wins
+    if tool_entry.callback_deadline is not None:
+        deadline = tool_entry.callback_deadline.get(kind)
+        if deadline is not None:
+            return float(deadline)
+    
+    # 2. Fall back to global config
+    try:
+        from hermes_cli.config import load_config
+        config = load_config() or {}
+        tools_config = config.get("tools", {})
+        callback_deadlines = tools_config.get("callback_deadlines", {})
+        deadline = callback_deadlines.get(kind)
+        if deadline is not None:
+            return float(deadline)
+    except Exception:
+        pass
+    
+    # 3. Not configured = no enforcement
+    return None
+
+
+async def _run_with_deadline(coro, deadline_s: float | None, tool_name: str, callback_kind: str) -> Any:
+    """Run a coroutine with a deadline budget.
+    
+    If deadline exceeded: logs structured warning and returns None (fail-open).
+    If no deadline: runs normally.
+    
+    Args:
+        coro: Coroutine to run
+        deadline_s: Deadline in seconds, or None to disable
+        tool_name: Name of the tool (for logging)
+        callback_kind: Type of callback (for logging)
+    
+    Returns:
+        Result of coroutine, or None if deadline exceeded
+    """
+    if deadline_s is None:
+        return await coro
+    
+    try:
+        start = time.monotonic()
+        result = await asyncio.wait_for(coro, timeout=deadline_s)
+        return result
+    except asyncio.TimeoutError:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.warning(
+            "callback_deadline_exceeded",
+            extra={
+                "tool_name": tool_name,
+                "callback_kind": callback_kind,
+                "budget_s": deadline_s,
+                "elapsed_ms": elapsed_ms,
+            }
+        )
+        return None
+    except Exception:
+        # Any other exception propagates normally
+        raise
+
+
+def _run_sync_with_deadline(fn, deadline_s: float | None, tool_name: str, callback_kind: str) -> Any:
+    """Run a sync function with a deadline budget using a thread pool.
+    
+    If deadline exceeded: logs structured warning and returns None (fail-open).
+    If no deadline: runs normally.
+    """
+    if deadline_s is None:
+        return fn()
+    
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        try:
+            start = time.monotonic()
+            result = future.result(timeout=deadline_s)
+            return result
+        except concurrent.futures.TimeoutError:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logger.warning(
+                "callback_deadline_exceeded",
+                extra={
+                    "tool_name": tool_name,
+                    "callback_kind": callback_kind,
+                    "budget_s": deadline_s,
+                    "elapsed_ms": elapsed_ms,
+                }
+            )
+            return None
+        except Exception:
+            raise
 
 
 def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) -> bool:
