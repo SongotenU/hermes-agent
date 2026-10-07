@@ -536,6 +536,11 @@ _LOCAL_SERVER_ALIASES = {
     "llama.cpp": "custom", "llama-cpp": "custom",
 }
 
+# Of those aliases only llama.cpp is a runtime Hermes supervises itself, so its live endpoint (port
+# included) can be read from the supervisor state file; ollama/vLLM are servers the user runs and
+# keep needing their own base_url.
+_MANAGED_LOCAL_VISION_PROVIDERS = frozenset({"llamacpp", "llama.cpp", "llama-cpp"})
+
 _ALIAS_TABLE: Optional[Dict[str, str]] = None
 
 
@@ -5700,7 +5705,16 @@ def resolve_vision_provider_client(
         "vision", provider, model, base_url, api_key
     )
     # The raw name keeps a llama.cpp alias distinguishable from bare ``custom`` for the last resolve.
-    raw_requested, requested = requested, _normalize_vision_provider(requested)
+    raw_requested = requested
+    # A managed local runtime is addressed by its LIVE endpoint: the stable port moves to an
+    # ephemeral one whenever something else holds it, and a base_url left in config then 404s.
+    # Resolved before normalization, because the managed-provider set matches the requested name.
+    if (requested or "").strip().lower() in _MANAGED_LOCAL_VISION_PROVIDERS and not resolved_base_url:
+        managed_base, managed_key = managed_local_endpoint()
+        if managed_base:
+            resolved_base_url = managed_base
+            resolved_api_key = resolved_api_key or managed_key
+    requested = _normalize_vision_provider(requested)
     if resolved_base_url:
         provider_for_base_override = requested if requested and requested not in {"", "auto"} else "custom"
         client, final_model = resolve_provider_client(
@@ -7051,6 +7065,30 @@ def _is_managed_local_endpoint(base_url: Optional[str]) -> bool:
         return urlparse(str(base_url)).netloc.lower() == managed
     except Exception:
         return False
+
+
+def managed_local_endpoint() -> "tuple[str, str]":
+    """``(base_url, api_key)`` of the live managed llama-server, or ``("", "")``.
+
+    The stable port moves to an ephemeral one whenever something else holds it, so a base_url
+    pasted into config outlives its server and strands the task on a 404. Resolving from the same
+    supervisor state file provider resolution uses keeps vision on the live endpoint."""
+    try:
+        from hermes_cli.local_runtime.supervisor import state_path
+
+        state = json.loads(state_path().read_text(encoding="utf-8-sig")) or {}
+        base = str(state.get("base_url", "")).rstrip("/")
+        if not base:
+            return ("", "")
+        pid = int(state.get("pid") or 0)
+        if pid > 0:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return ("", "")
+        return base, str(state.get("api_key", ""))
+    except Exception:
+        return ("", "")
 
 
 def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:

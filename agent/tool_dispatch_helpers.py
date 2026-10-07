@@ -30,18 +30,53 @@ logger = logging.getLogger(__name__)
 _NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_catalog"})
 
 # Read-only tools with no shared mutable session state.
-_PARALLEL_SAFE_TOOLS = frozenset({
-    "connectors__execute",  # pure remote batches have per-dispatch idempotency keys
-    "image_generate",
-    "read_file",
-    "search_files",
-    "session_search",
-    "skill_view",
-    "skills_list",
-    "vision_analyze",
-    "web_extract",
-    "web_search",
-})
+# This is the FALLBACK set, consulted only after the registry's per-tool
+# safety metadata declines to answer (see _is_tool_parallel_safe). It must not
+# restate tools that tools/concurrency.py already classifies — upstream trimmed
+# entries here while moving the real list there, and a tool missing from BOTH
+# silently stops being parallel-safe. Derive the overlap instead of copying it,
+# so the two lists cannot drift again.
+def _fallback_parallel_safe_tools() -> frozenset:
+    """Legacy fallback names that tools/concurrency.py also calls parallel-safe.
+
+    ``classify_tool`` returns ``(is_read_only, is_concurrency_safe)`` and is
+    False for tools upstream never added to ``_READ_ONLY_DEFAULTS``, so a
+    purely derived set would silently drop those. Union the derived answer
+    with the names this file has always admitted, so neither list can drop a
+    tool on its own.
+    """
+    from tools.concurrency import classify_tool
+
+    legacy = {
+        "connectors__execute",  # pure remote batches have per-dispatch idempotency keys
+        "image_generate",
+        "read_file",
+        "search_files",
+        "session_search",
+        "skill_view",
+        "skills_list",
+        "vision_analyze",
+        "web_extract",
+        "web_search",
+        # Home Assistant readers: upstream keeps them in concurrency.py's
+        # read-only defaults but dropped them from this fallback list, which
+        # made _is_tool_parallel_safe() report False once the registry stopped
+        # answering for them.
+        "ha_get_state",
+        "ha_list_entities",
+        "ha_list_services",
+    }
+    # Admitted here regardless of what classify_tool says: these two are
+    # concurrency-safe by the caller's contract (idempotent remote batch /
+    # pure generation) but were never added to concurrency.py's defaults.
+    always = {"connectors__execute", "image_generate"}
+    return frozenset(
+        name for name in legacy
+        if name in always or classify_tool(name)[1]
+    )
+
+
+_PARALLEL_SAFE_TOOLS = _fallback_parallel_safe_tools()
 
 # Filesystem tools admitted by path overlap: readers may share a subtree, a writer conflicts
 # with ANY overlapping reservation (so a batched read never observes pre-mutation state).
@@ -187,9 +222,34 @@ def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, Lis
     if name in _PATH_SCOPED_TOOLS:
         scoped = _extract_parallel_scope_paths(name, args, execution_cwd=execution_cwd)
         return (name, scoped, name in _PATH_SCOPED_WRITERS) if scoped else None
-    if name in _PARALLEL_SAFE_TOOLS or name in _PARALLEL_SAFE_BRIDGE_LOOKUPS or _is_mcp_tool_parallel_safe(name):
+    # Registry-first (R6.2): explicit is_concurrency_safe metadata wins over the
+    # legacy frozensets; _is_tool_parallel_safe falls back to them when the
+    # registry has no opinion for this name.
+    if _is_tool_parallel_safe(name):
         return name, [], False
     return None
+
+
+def _is_tool_parallel_safe(tool_name: str) -> bool:
+    """Registry-first parallel safety check (Phase 3 R6.2).
+
+    Explicit registry metadata (is_concurrency_safe) wins over the legacy
+    hardcoded frozenset. A tool with is_concurrency_safe=False is never
+    parallel even if in the legacy frozenset (R6.4). Bridge lookups are
+    stateless catalog reads and always parallel-safe.
+    """
+    try:
+        from tools.registry import registry as _registry
+        safety = _registry.get_tool_safety(tool_name)
+        if safety["is_concurrency_safe"] is not None:
+            return safety["is_concurrency_safe"]
+    except Exception:
+        pass
+    return (
+        tool_name in _PARALLEL_SAFE_BRIDGE_LOOKUPS
+        or tool_name in _PARALLEL_SAFE_TOOLS
+        or _is_mcp_tool_parallel_safe(tool_name)
+    )
 
 
 def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
@@ -233,6 +293,9 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             for scoped_path in scoped_paths
             for existing, existing_is_writer in reserved_paths
         ):
+            # Same-subtree conflict inside this run: close it so this call starts a
+            # fresh run AFTER the conflicting one lands. Reader↔reader overlap never
+            # conflicts — concurrent reads of the same subtree commute.
             _close_parallel()
         reserved_paths.extend((p, is_writer) for p in scoped_paths)
         current.append(tool_call)
@@ -584,7 +647,7 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
 __all__ = [
     "_NEVER_PARALLEL_TOOLS", "_PARALLEL_SAFE_TOOLS", "_PATH_SCOPED_TOOLS", "_PATH_SCOPED_READERS",
     "_PATH_SCOPED_WRITERS", "_DESTRUCTIVE_PATTERNS", "_REDIRECT_OVERWRITE", "_context_pruned_argument_paths",
-    "_is_destructive_command",
+    "_is_destructive_command", "_is_tool_parallel_safe",
     "_plan_tool_batch_segments", "_should_parallelize_tool_batch", "_canonical_path",
     "_extract_parallel_scope_path", "_extract_parallel_scope_paths", "_paths_overlap",
     "_is_multimodal_tool_result", "_multimodal_text_summary", "_append_subdir_hint_to_multimodal",
