@@ -4,6 +4,7 @@ The catalog carries only published models, so a self-staged finetune used to aut
 `mmproj` and silently lost vision. `model_overrides.json` is read at preset-build time — which is
 why it survives a regeneration — and must never break a boot when it is missing or malformed.
 """
+import json
 from types import SimpleNamespace
 
 from hermes_cli.local_runtime import presets
@@ -37,7 +38,7 @@ def test_override_projector_reaches_a_non_catalog_model(tmp_path, monkeypatch):
 
     path = presets.model_overrides_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('{"Custom-Heretic-27B": {"mmproj": "%s"}}' % projector, encoding="utf-8")
+    path.write_text(json.dumps({"Custom-Heretic-27B": {"mmproj": str(projector)}}), encoding="utf-8")
 
     gguf = _stage(tmp_path, monkeypatch, "Custom-Heretic-27B")
     result = presets.preset_for_model(gguf, _budget(), set())
@@ -85,7 +86,7 @@ def test_catalog_projector_still_wins(tmp_path, monkeypatch):
     decoy.touch()
     path = presets.model_overrides_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('{"%s": {"mmproj": "%s"}}' % (entry.variants[0].model_id, decoy),
+    path.write_text(json.dumps({entry.variants[0].model_id: {"mmproj": str(decoy)}}),
                     encoding="utf-8")
 
     gguf = _stage(tmp_path, monkeypatch, entry.variants[0].model_id)

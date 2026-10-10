@@ -254,7 +254,7 @@ async def _run_with_deadline(coro, deadline_s: float | None, tool_name: str, cal
         start = time.monotonic()
         result = await asyncio.wait_for(coro, timeout=deadline_s)
         return result
-    except asyncio.TimeoutError:
+    except TimeoutError:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         logger.warning(
             "callback_deadline_exceeded",
