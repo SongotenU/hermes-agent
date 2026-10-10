@@ -79,6 +79,55 @@ def _runs_mtp(entry, companions: _Companions) -> bool:
     return entry is not None and (entry.mtp or companions.mtp_head is not None)
 
 
+def model_overrides_path() -> Path:
+    """User-declared launch extras for models the catalog has never heard of (custom finetunes).
+
+    Read at preset build time, so it survives a preset regeneration; the catalog cannot carry a
+    finetune nobody publishes, but a projector the user points at still buys vision."""
+    from hermes_cli.local_runtime.binaries import runtimes_root
+
+    return runtimes_root() / "model_overrides.json"
+
+
+def load_model_overrides() -> dict:
+    """``model_id -> {"mmproj": "<path>"}``. Empty on any read problem (never blocks a boot)."""
+    try:
+        with open(model_overrides_path(), encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+        return {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
+    except Exception:
+        return {}
+
+
+def _override_mmproj_path(model_id: str) -> Path | None:
+    """Projector declared for a custom model id, or None when absent/unreadable."""
+    raw = (load_model_overrides().get(model_id) or {}).get("mmproj")
+    if not raw:
+        return None
+    path = Path(str(raw)).expanduser()
+    return path if path.is_file() else None
+
+
+def _projector_path(companions: _Companions, model_id: str) -> Path | None:
+    """The projector this launch loads: the catalog's own when it is on disk, else a user-declared
+    override — a custom finetune is not a catalog entry, but a projector the user points at still
+    buys vision."""
+    if companions.mmproj is not None:
+        return companions.mmproj
+    return _override_mmproj_path(model_id)
+
+
+def _override_mmproj_bytes(companions: _Companions, mmproj_path: Path | None) -> int:
+    """Projector bytes beyond the catalog's own figure: an override projector is real memory even
+    though the catalog never priced it (catalog figures ride in ``companions.nbytes``)."""
+    if mmproj_path is None or companions.mmproj is not None:
+        return 0
+    try:
+        return mmproj_path.stat().st_size
+    except OSError:
+        return 0
+
+
 def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhead: int) -> bool:
     """Optional draft never shrinks the advertised window or displaces its GPU buffers.
 
@@ -120,7 +169,9 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     companions = _companions(entry)
     is_mtp = _runs_mtp(entry, companions) if entry is not None else model_id in mtp_capable
 
-    fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
+    mmproj_path = _projector_path(companions, model_id)
+    fixed_overhead = (RUNTIME_OVERHEAD_BYTES + companions.nbytes
+                      + _override_mmproj_bytes(companions, mmproj_path))
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
                        requested_window=(load_window_overrides().get(model_id)
                                          if requested_window is None else requested_window))
@@ -155,8 +206,9 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     if entry is not None:
         for k, v in (entry.sampling or {}).items():
             keys.setdefault(k, v)
-        if companions.mmproj is not None:
-            keys["mmproj"] = str(companions.mmproj)
+    if mmproj_path is not None:
+        keys["mmproj"] = str(mmproj_path)
+    if entry is not None:
         if companions.mtp_head is not None:
             # The model carries no MTP layers: draft-mtp drafts from the shipped head instead.
             keys["model-draft"] = str(companions.mtp_head)
@@ -205,8 +257,10 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
         return None
     entry = entry_for_model(model_id)
     companions = _companions(entry)
+    mmproj_path = _projector_path(companions, model_id)
     plan = plan_launch(profile, budget, mtp_capable=_runs_mtp(entry, companions),
-                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + companions.nbytes,
+                       fixed_overhead=(RUNTIME_OVERHEAD_BYTES + companions.nbytes
+                                       + _override_mmproj_bytes(companions, mmproj_path)),
                        requested_window=load_window_overrides().get(model_id))
     if isinstance(plan.decision, PhysicsRefusal):
         return None
