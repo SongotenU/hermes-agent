@@ -47,7 +47,7 @@ def _args_to_keys(args: list[str]) -> dict[str, str]:
     return keys
 
 
-def _asset_path(asset) -> "Path | None":
+def _asset_path(asset) -> Path | None:
     """On-disk path of a catalog companion asset, or None when it isn't downloaded."""
     from hermes_cli.local_runtime.bootstrap import assets_dir
 
@@ -61,8 +61,8 @@ def _asset_path(asset) -> "Path | None":
 class _Companions:
     """The files a catalog entry loads beside its weights, as far as they are on disk."""
 
-    mmproj: "Path | None" = None
-    mtp_head: "Path | None" = None
+    mmproj: Path | None = None
+    mtp_head: Path | None = None
     nbytes: int = 0
 
 
@@ -99,7 +99,7 @@ def load_model_overrides() -> dict:
         return {}
 
 
-def _override_mmproj_path(model_id: str) -> "Path | None":
+def _override_mmproj_path(model_id: str) -> Path | None:
     """Projector declared for a custom model id, or None when absent/unreadable."""
     raw = (load_model_overrides().get(model_id) or {}).get("mmproj")
     if not raw:
@@ -108,7 +108,7 @@ def _override_mmproj_path(model_id: str) -> "Path | None":
     return path if path.is_file() else None
 
 
-def _projector_path(companions: _Companions, model_id: str) -> "Path | None":
+def _projector_path(companions: _Companions, model_id: str) -> Path | None:
     """The projector this launch loads: the catalog's own when it is on disk, else a user-declared
     override — a custom finetune is not a catalog entry, but a projector the user points at still
     buys vision."""
@@ -117,7 +117,7 @@ def _projector_path(companions: _Companions, model_id: str) -> "Path | None":
     return _override_mmproj_path(model_id)
 
 
-def _override_mmproj_bytes(companions: _Companions, mmproj_path: "Path | None") -> int:
+def _override_mmproj_bytes(companions: _Companions, mmproj_path: Path | None) -> int:
     """Projector bytes beyond the catalog's own figure: an override projector is real memory even
     though the catalog never priced it (catalog figures ride in ``companions.nbytes``)."""
     if mmproj_path is None or companions.mmproj is not None:
