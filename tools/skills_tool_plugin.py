@@ -8,6 +8,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
 
+from agent.skill_utils import SKILL_DIR_NOTE
 from tools.skills_tool_setup import SkillReadinessStatus
 
 logger = logging.getLogger("tools.skills_tool")
@@ -156,10 +157,15 @@ def _serve_plugin_skill(
     rendered_content = content if not preprocess else _preprocess_skill(
         content, skill_md.parent, session_id, "Could not preprocess plugin skill %s:%s",
         namespace, bare)
+    linked_files = _plugin_skill_linked_files(skill_md.parent)
     return _json({
         "success": True, "name": qualified_name, "content": banner + rendered_content,
         "description": _truncate_description(str(parsed_frontmatter.get("description", ""))),
-        "linked_files": _plugin_skill_linked_files(skill_md.parent),
+        "linked_files": linked_files,
+        "usage_hint": (
+            "To view linked files, call skill_view(name, file_path) where file_path is e.g. "
+            f"'references/api.md' or 'assets/config.yaml'. {SKILL_DIR_NOTE}"
+        ) if linked_files else None,
         "readiness_status": SkillReadinessStatus.AVAILABLE.value,
         "skill_dir": str(skill_md.parent), "_source_path": str(skill_md)})
 

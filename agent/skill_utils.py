@@ -423,6 +423,16 @@ def display_skill_create_dir() -> str:
 TIER_PROJECT, TIER_LOCAL, TIER_CREATE_DIR, TIER_EXTERNAL = range(4)
 # Leading words of every same-tier refusal (skill_view error, preload/cron label) — one spelling.
 AMBIGUOUS_SKILL_PREFIX = "Ambiguous skill name "
+
+# Canonical guidance for skill-relative paths, shared by every surface that loads a skill
+# (slash/auto-load invocation messages in agent.skill_commands, and the skill_view result):
+# a model acting on the skill must resolve e.g. ``scripts/foo.js`` against the skill's own
+# directory — never the session cwd — then run it by absolute path.
+SKILL_DIR_NOTE = (
+    "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
+    "`templates/config.yaml`) against that directory, then run them "
+    "with the terminal tool using the absolute path."
+)
 # (shadowed path, *sorted higher-tier paths) already judged: the identity check (it hashes both
 # SKILL.md files) and its one-time warning run once per pairing, not on every catalog resolve.
 _SHADOW_CHECKED: set[tuple[str, ...]] = set()

@@ -12,7 +12,7 @@ from hermes_constants import display_hermes_home
 from agent.initiate_setup_prompt import HEADER as INITIATE_SETUP_HEADER
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
-from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
+from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX, SKILL_DIR_NOTE
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ _SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
 # describer strips the header + body and renders the typed request (session previews, titles).
 _AUTO_LOAD_PREFIX = '[IMPORTANT: The "'
 _AUTO_LOAD_SUFFIX_RE = re.compile(r'" skill is auto-loaded\. Follow its instructions for this session\.\]')
-# Closing sentence of the skill-directory footer note (see _SKILL_DIR_NOTE in this module):
+# Closing sentence of the skill-directory footer note (see SKILL_DIR_NOTE in agent.skill_utils):
 # the last thing in every built payload, so it marks where an auto-load payload ends and the
 # next payload or the user's typed text begins.
 _SKILL_DIR_NOTE_END = "then run them with the terminal tool using the absolute path."
@@ -296,11 +296,6 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         pass
 
 
-_SKILL_DIR_NOTE = (
-    "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
-    "`templates/config.yaml`) against that directory, then run them "
-    "with the terminal tool using the absolute path."
-)
 _SETUP_SKIPPED_NOTE = (
     "Required environment setup was skipped. Continue loading the skill "
     "and explain any reduced functionality if it matters."
@@ -345,7 +340,7 @@ def _build_skill_message(
     parts = [activation_note, "", content.strip()]
     # Absolute skill dir lets the agent run bundled scripts without a skill_view() round-trip.
     if skill_dir:
-        parts += ["", f"[Skill directory: {skill_dir}]", _SKILL_DIR_NOTE]
+        parts += ["", f"[Skill directory: {skill_dir}]", SKILL_DIR_NOTE]
     _inject_skill_config(loaded_skill, parts)
     setup_note = _setup_note(loaded_skill)
     if setup_note:

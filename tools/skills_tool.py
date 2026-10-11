@@ -16,7 +16,8 @@ from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, SKILL_DIR_NOTE,
+    is_skill_support_path as _is_skill_support_path)
 from tools.skills_tool_setup import (
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -658,7 +659,10 @@ def skill_view(
             "tags": tags, "related_skills": related_skills, "content": rendered_content,
             "path": rel_path, "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
-            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
+            "usage_hint": (
+                "To view linked files, call skill_view(name, file_path) where file_path is e.g. "
+                f"'references/api.md' or 'assets/config.yaml'. {SKILL_DIR_NOTE}"
+            ) if linked_files else None,
             **readiness,
             # Internal: absolute source path for the repeat-view dedup fingerprint.
             "_source_path": str(skill_md),
