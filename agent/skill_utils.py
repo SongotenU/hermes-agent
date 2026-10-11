@@ -191,6 +191,45 @@ def skill_matches_apps(frontmatter: dict[str, Any]) -> bool:
     return True
 
 
+# Invocation-surface flags (ported from DeepSeek Harness' SkillInvocationPolicy): two independent
+# opt-outs a skill declares in its own frontmatter, both default true. ``model_invocable: false``
+# keeps the skill out of model-facing catalogs (prompt index, skills_list) and makes the
+# model-facing loader (skill_view tool) refuse; user-initiated loads (slash invocation, --skills
+# preload, auto-load) still work. ``user_invocable: false`` keeps the skill out of user-facing
+# offer surfaces (slash-command registration, palettes). An explicit-but-unparseable value keeps
+# the default rather than guessing.
+_TRUTHY_FRONTMATTER_FLAGS = frozenset({"true", "yes", "on", "1"})
+_FALSY_FRONTMATTER_FLAGS = frozenset({"false", "no", "off", "0"})
+
+
+def _frontmatter_flag(frontmatter: dict[str, Any], key: str, default: bool = True) -> bool:
+    """Read boolean frontmatter flag *key*; missing/invalid values keep *default*. YAML parses
+    real booleans, but the malformed-frontmatter line-splitter fallback yields strings."""
+    value = frontmatter.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUTHY_FRONTMATTER_FLAGS:
+            return True
+        if normalized in _FALSY_FRONTMATTER_FLAGS:
+            return False
+    return default
+
+
+def skill_user_invocable(frontmatter: dict[str, Any]) -> bool:
+    """False when ``user_invocable: false``: the skill opts out of user-facing offer surfaces."""
+    return _frontmatter_flag(frontmatter, "user_invocable")
+
+
+def skill_model_invocable(frontmatter: dict[str, Any]) -> bool:
+    """False when ``model_invocable: false``: the skill opts out of model-facing catalogs and the
+    model-facing loader, while staying available to user-initiated loads."""
+    return _frontmatter_flag(frontmatter, "model_invocable")
+
+
 _RAW_CONFIG_CACHE: dict[tuple[str, int, int, int, int], dict[str, Any]] = {}
 
 
