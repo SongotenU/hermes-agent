@@ -239,6 +239,17 @@ class CompressionBusy(Exception):
     """Raised by _manual_compress_turn when a turn already holds the session; callers map it to their busy reply."""
 
 
+class CompressionFailed(Exception):
+    """Raised by _compress_session_history for a failed manual compression (``CompressResult``
+    status ``failed``): carries the taxonomy line (``describe_compression_failure``) so callers
+    surface a clear message instead of \"No changes from compression\"."""
+
+    def __init__(self, message: str, kind: str = "", detail: str = ""):
+        self.kind = kind
+        self.detail = detail
+        super().__init__(message)
+
+
 @contextlib.contextmanager
 def _manual_compress_turn(sid: str, session: dict):
     """Hold the session busy (``running``) for a whole manual compaction: snapshot, LLM summary, commit
@@ -299,6 +310,13 @@ def _compress_session_history(
     # Lock-skipped: raise so callers surface a clear message instead of "No changes from compression".
     if result.status == "lock_skipped":
         raise CompressionLockHeld(result.lock_holder)
+    # Failed: same reason as lock-skipped — the taxonomy line must reach the caller.
+    if result.status == "failed":
+        from agent.manual_compression_feedback import describe_compression_failure
+        raise CompressionFailed(
+            describe_compression_failure(result.failure_kind, result.failure_message),
+            kind=result.failure_kind, detail=result.failure_message,
+        )
     if result.status != "compressed":
         return 0, _get_usage(agent)
     with session["history_lock"]:
