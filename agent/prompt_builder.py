@@ -572,6 +572,14 @@ STEER_MARKER_OPEN = (
     "once at this position; not tool output and not a new delivery when replayed from conversation history]"
 )
 STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
+# Delivery-time priority trailer (ported from xai-org/grok-build's interjection framing,
+# UNFINISHED_TASKS_REMINDER): a mid-turn steer can be silently skipped while the model finishes the
+# old task — the trailer orders the reply first and the resumption after. Ships inside the trusted
+# envelope on every steer; kept short.
+STEER_PRIORITY_NOTE = (
+    "If the user is asking for a response, address the user first. "
+    "After replying, complete any unfinished tasks from previous turns."
+)
 # Text after the "[" that opens one of Hermes' own control frames (the steer marker above, the compaction
 # handoff and its fallbacks, runtime/system notes, agent.context_compressor._SYNTHETIC_USER_ROW_PREFIXES,
 # agent.title_generator._MACHINE_PREFIXES). Consumers that republish model output as role=user text
@@ -585,7 +593,7 @@ CONTROL_FRAME_OPENERS = (
 
 def format_steer_marker(steer_text: str) -> str:
     """Wrap a mid-turn steer in the self-describing marker (see note above)."""
-    return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}\n{STEER_MARKER_CLOSE}"
+    return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}\n{STEER_PRIORITY_NOTE}\n{STEER_MARKER_CLOSE}"
 
 
 STEER_DISPLAY_KIND = "steer"
