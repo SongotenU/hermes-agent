@@ -189,17 +189,6 @@ class MemoryStore:
         Threat hits are replaced by a ``[BLOCKED: …]`` placeholder in the SNAPSHOT only;
         live lists keep the raw text so the user can see and remove poisoned entries
         (dropping them silently would hide the attack)."""
-        from tools.threat_patterns import scan_for_threats
-
-        def _sanitize(entry, filename):
-            # Strict scope, same as writes; empty / already-blocked entries pass through.
-            findings = scan_for_threats(entry, scope="strict") if entry and not entry.startswith("[BLOCKED:") else None
-            if not findings:
-                return entry
-            logger.warning("Memory entry from %s blocked at load time: %s", filename, ", ".join(findings))
-            return (f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
-                    f"Removed from system prompt; use memory(action=remove) to delete the original.]")
-
         for target in ("memory", "user"):
             path = self._path_for(target)
             from hermes_constants import mkdir_under_hermes_home
@@ -215,7 +204,27 @@ class MemoryStore:
                 logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
                                "further additions are blocked until it is back under the limit.",
                                path.name, count, limit)
-            self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
+            self._system_prompt_snapshot[target] = self._render_block(target, [self._sanitize_entry(e, path.name) for e in entries])
+
+    def _sanitize_entry(self, entry: str, filename: str) -> str:
+        """Strict-scope threat scan for the system-prompt SNAPSHOT only; live lists keep the raw
+        text so the user can see and remove poisoned entries (dropping them silently would hide
+        the attack)."""
+        from tools.threat_patterns import scan_for_threats
+
+        findings = scan_for_threats(entry, scope="strict") if entry and not entry.startswith("[BLOCKED:") else None
+        if not findings:
+            return entry
+        logger.warning("Memory entry from %s blocked at load time: %s", filename, ", ".join(findings))
+        return (f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
+                f"Removed from system prompt; use memory(action=remove) to delete the original.]")
+
+    def fresh_entries_from_disk(self, target: str) -> list[str]:
+        """Entries a fresh load would read now (dedup, order-preserving, snapshot-sanitized).
+        Read-only: never mutates live state or the frozen snapshot (memory_delta's disk side)."""
+        path = self._path_for(target)
+        entries = list(dict.fromkeys(self._read_file(path)))
+        return [self._sanitize_entry(e, path.name) for e in entries]
 
     @staticmethod
     @contextmanager
