@@ -21,10 +21,8 @@ from agent.compression_marker import (
     elide_middle,
 )
 from agent.auxiliary_client import (
-    CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
-    _is_connection_error,
     _message_field,
     aux_interrupt_protection,
     call_llm,
@@ -34,6 +32,13 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
+from agent.context_compressor_failures import (
+    _TRUNCATED_SUMMARY_MARKER,
+    _classify_summary_failure,
+    _exc_status_code,
+    _next_timeout_cooldown,
+    check_degenerate_summary,
+)
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
@@ -152,14 +157,6 @@ def _response_finish_reason(response: Any) -> str:
         return ""
 
 
-# Marker for a length-stopped (PARTIAL) summary; the except-branch classifier keys
-# on this exact substring, so keep raise sites and classifier in sync.
-# RuntimeError marker raised when the summarizer's generation stopped on the output-token cap
-# (``finish_reason == "length"``). A length stop means the summary text is PARTIAL — persisting it as a
-# compaction checkpoint would silently truncate the conversation's memory and feed the cut-off text back
-# into every subsequent iterative-update prompt. (Ported from earendil-works/pi#7048 / commit 97fa14e39.)
-_TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
-
 # A provider can return a natural-language refusal with finish_reason="stop". It is
 # non-empty, so the usual response validation accepts it, but it contains none of
 # the checkpoint needed to safely replace the compacted turns. Keep this narrow:
@@ -238,11 +235,6 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
         or _exc_status_code(exc) in {401, 402, 403}
         or any(marker in err_text for marker in _SUMMARY_PERMANENT_QUOTA_MARKERS)
     )
-
-
-def _exc_status_code(exc: Exception) -> Any:
-    """HTTP status carried on the exception itself or on its ``response``."""
-    return getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
 
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
@@ -685,66 +677,6 @@ def _short_error_text(e: Exception, limit: int = 220) -> str:
     return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
 
 
-@dataclass
-class _SummaryFailureKind:
-    """Transient-failure classes of a summary call (several may hold at once)."""
-
-    model_not_found: bool
-    timeout: bool
-    json_decode: bool
-    streaming_closed: bool
-    empty_content: bool
-    truncated: bool
-    overloaded: bool
-
-    def fallback_reason(self) -> str:
-        """Reason string for the one-shot main-model retry log line, most specific first."""
-        reasons = (
-            (self.json_decode, "returned invalid JSON"), (self.truncated, "returned a truncated summary (output token cap)"),
-            (self.empty_content, "returned empty content"), (self.overloaded, "was overloaded"),
-            (self.model_not_found, "unavailable"),
-            (self.streaming_closed, "closed stream prematurely"), (self.timeout, "timed out"),
-        )
-        return next((reason for flagged, reason in reasons if flagged), "failed")
-
-
-def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
-    """Classify a summary-call exception by status code / message shape.
-
-    A "refusal content" RuntimeError (prose or provider ``refusal`` field) deliberately rides the
-    ``empty_content`` class — cooldown + main-model fallback + abort — so the "returned empty content"
-    fallback log line is expected for refusals.
-    """
-    status = _exc_status_code(e)
-    err = str(e).lower()
-    # #124077: only the Codex aux stream guard's mid-stream stall is a retry-ladder timeout; real
-    # transport timeouts and the guard's no-progress/hard-ceiling timeouts stay terminal
-    # network failures (#29559/#94448).
-    stall = isinstance(e, TimeoutError) and CODEX_STREAM_STALL_MARKER in str(e)
-    return _SummaryFailureKind(
-        # Permanent-looking error on a distinct summary model: fall back to main instead of cooldown.
-        model_not_found=status in {404, 503}
-        or any(m in err for m in ("model_not_found", "does not exist", "no available channel")),
-        timeout=stall or status in {408, 429, 502, 504} or "timeout" in err or "timed out" in err,
-        # Malformed/non-JSON bodies (HTML 502 as application/json) surface as JSONDecodeError or
-        # APIResponseValidationError "expecting value"; treat as transient.
-        json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
-        # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        streaming_closed=_is_connection_error(e) and not stall,
-        # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
-        # shapes from _validate_llm_response.
-        empty_content=isinstance(e, RuntimeError) and any(
-            m in err for m in (
-                "empty content", "refusal content", "llm returned none response", "llm returned invalid response",
-            )
-        ),
-        # Truncated summary: one main-model retry, then ABORT preserving the session.
-        truncated=isinstance(e, RuntimeError) and _TRUNCATED_SUMMARY_MARKER in err,
-        overloaded=classify_api_error(e).reason is FailoverReason.overloaded
-        or any(marker in err for marker in ("overloaded", "at capacity", "over capacity")),
-    )
-
-
 # Summary failures that abort compress() regardless of abort_on_summary_failure, in precedence
 # order: (flag attribute, telemetry failure_class, user-facing warning with %d preserved messages).
 _TERMINAL_SUMMARY_FAILURES = (
@@ -770,6 +702,14 @@ _TERMINAL_SUMMARY_FAILURES = (
         "lose context: retry with /compress, or raise the summarizer's output budget.",
     ),
     (
+        "_last_summary_degenerate_failure",
+        "summary_degenerate_failure",
+        "Summary generation failed (LLM returned a degenerate summary — too short to cover the compacted "
+        "turns) — aborting compression. %d message(s) preserved unchanged; the session was NOT rotated. A "
+        "degenerate summary would silently lose context: retry with /compress, or continue the conversation "
+        "as-is.",
+    ),
+    (
         "_last_summary_empty_content_failure",
         "summary_empty_content_failure",
         "Summary generation failed (LLM returned empty content) — aborting compression. %d message(s) "
@@ -785,12 +725,6 @@ _TERMINAL_SUMMARY_FAILURES = (
     ),
 )
 
-# Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer. Truncated summaries
-# (finish_reason=length) walk the same rungs on their own counter: the output cap is deterministic for an
-# unchanged route and prompt, so a flat 30s cooldown let every async-completion turn re-issue the same
-# capped request after its per-turn attempt budget was refilled (#69637).
-_TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
-
 # Sustained-overload escalation (#123167): ONE overload aborts so a later retry can still win (#115906),
 # but if every summary attempt keeps aborting the transcript only grows until the session exits
 # compression_exhausted and the gateway auto-resets — bounded middle-window loss becomes a total
@@ -802,16 +736,6 @@ _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
 # completed boundary (incl. the degraded fallback, else recovery stays degraded) or a runtime switch
 # resets it.
 _CONSECUTIVE_OVERLOAD_ABORT_ESCALATION = 3
-
-
-def _next_timeout_cooldown(compressor: Any, counter: str = "_consecutive_timeout_failures") -> int:
-    """Bump ``compressor.<counter>`` and return the ladder rung for it.
-    Module-level (not a method) so callers that bind a single real method onto a stub still exercise the ladder.
-    ``counter`` stays separate per failure class: the timeout streak also arms the deterministic stall fallback
-    (``_prior_timeout_failures``), which a truncation must not trigger."""
-    n = getattr(compressor, counter, 0) + 1
-    setattr(compressor, counter, n)
-    return _TIMEOUT_COOLDOWN_LADDER[min(n, len(_TIMEOUT_COOLDOWN_LADDER)) - 1]
 
 
 _MIN_SUMMARY_TOKENS = 2000
@@ -2285,7 +2209,7 @@ class ContextCompressor(
         # may differ from ``summary_model``/``model``). Recorded so a failed auto-resolved model is
         # named in the user-visible warning and falls back to the main model (#116472).
         self._last_aux_resolved_model = None
-        self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._consecutive_degenerate_failures = 0
         # Sustained-overload escalation bookkeeping (#123167): per-session, reset by success.
         self._consecutive_overload_aborts = 0
         self._last_summary_overload_degraded = False
@@ -2328,7 +2252,7 @@ class ContextCompressor(
         self._summary_failure_cooldown_until = 0.0
         self._cooldown_persist_failed = False
         self._last_summary_error = None
-        self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._fallback_compression_streak = 0
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._consecutive_degenerate_failures = self._fallback_compression_streak = 0
         self._consecutive_overload_aborts = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = self._fallback_probe_at = 0.0
@@ -2639,7 +2563,7 @@ class ContextCompressor(
             logger.info("Skipping compression cooldown clear: host already cancelled this compression attempt")
             return
         self._summary_failure_cooldown_until, self._last_summary_error = 0.0, None
-        self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._consecutive_degenerate_failures = 0
         self._cooldown_persist_failed = False
         # Circuit breaker reset (R2.3a): cooldown cleared means we got a clean
         # shot (success, manual retry, or fresh session) — wipe the consecutive
@@ -4063,6 +3987,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             content = strip_think_blocks(None, content).strip() or content
             # The summarizer may echo secrets verbatim; redact the output too.
             summary = _redact_compaction_text(content.strip())
+            # Degenerate-summary gate (ported from xai-org/grok-build's is_degenerate_summary; the
+            # floor scales down for small transcripts) — see agent.context_compressor_failures.
+            check_degenerate_summary(summary, len(content_to_summarize))
             # Restore any [SKILL_PRUNED] marker the summarizer paraphrased away.
             # See #32106.
             summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
@@ -4280,6 +4207,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             _transient_cooldown = _next_timeout_cooldown(self)
         elif kind.truncated:
             _transient_cooldown = _next_timeout_cooldown(self, "_consecutive_truncation_failures")
+        elif kind.degenerate:
+            _transient_cooldown = _next_timeout_cooldown(self, "_consecutive_degenerate_failures")
         else:
             _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content) else 60
         err_text = _short_error_text(e)
@@ -4296,6 +4225,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_summary_network_failure = True
         elif kind.truncated:
             self._last_summary_truncated_failure = True
+        elif kind.degenerate:
+            self._last_summary_degenerate_failure = True
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
         elif kind.overloaded and not access_error:

@@ -144,6 +144,13 @@ def _stored_agent(db, history, *, create=True):
     return agent, db.get_messages_as_conversation("sid")
 
 
+def _long_summary(text: str) -> str:
+    """Grow a terse mock summary past the degenerate-summary gate's size-scaled floor
+    (see agent.context_compressor._MIN_SUMMARY_SEED_CHARS); assertions search for
+    substrings, so padding the body is safe."""
+    return text + "\n\n" + ("Additional context retained for the summary fixture. " * 16)
+
+
 def _compress_here(agent, history, keep):
     return _compress(agent, history, f"here {keep}")
 
@@ -151,7 +158,9 @@ def _compress_here(agent, history, keep):
 def _compress(agent, history, raw):
     response = MagicMock()
     response.choices = [MagicMock()]
-    response.choices[0].message.content = "## Goal\nNumbered fruit questions.\n## Progress\nEarly ones answered."
+    response.choices[0].message.content = _long_summary(
+        "## Goal\nNumbered fruit questions.\n## Progress\nEarly ones answered."
+    )
     with patch("agent.context_compressor.call_llm", lambda **_kw: response):
         return compress_now(agent, history, parse_compress_args(raw), system_message="", skip_without_window=True)
 
