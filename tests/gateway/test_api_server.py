@@ -984,10 +984,8 @@ class TestSkillsEndpoint:
             {"name": "github", "description": "GitHub workflow skill", "category": "github"},
             {"name": "ascii-art", "description": "ASCII art generation", "category": "creative"},
         ]
-        with patch(
-            "tools.skills_tool._find_all_skills",
-            return_value=list(fake_skills),
-        ):
+        # autospec pins the call to the real signature: a stale kwarg fails here, not as a 500.
+        with patch("tools.skills_tool._find_all_skills", autospec=True, return_value=list(fake_skills)):
             app = _create_app(adapter)
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/v1/skills")
