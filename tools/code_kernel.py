@@ -243,6 +243,13 @@ class CellAuthority:
         self.task_id = task_id
         self.ctx = contextvars.copy_context()
         self.active = True
+        # Transient sub-call progress emitter of THIS cell (set by the executor around the
+        # execute_code dispatch; None when no surface is attached). The kernel's serving
+        # thread carries no authority of its own, so ``_rpc_forever._dispatch`` re-installs
+        # this value per request — the thread's frozen context would otherwise carry the
+        # first cell's emitter forever.
+        from tools.subcall_progress import current_subcall_emitter
+        self.subcall_emitter = current_subcall_emitter()
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
         self._callbacks: list = []
         try:
@@ -489,6 +496,12 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
         authority = kernel.cell_authority
         if authority is None:
             return tool_error("No active execute_code cell: this kernel has no cell authority installed.")
+        # Re-install the CURRENT cell's sub-call emitter on this serving thread before the
+        # call: the thread's context is frozen at kernel creation, and the emit in
+        # ``_handle_rpc_request`` runs after ``dispatch`` returns (still on this thread), so
+        # without the refresh a later cell would emit through the first cell's emitter.
+        from tools.subcall_progress import set_subcall_emitter
+        set_subcall_emitter(authority.subcall_emitter)
         return authority.dispatch(tool_name, tool_args)
     while not kernel.stop_event.is_set():
         _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
