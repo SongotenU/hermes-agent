@@ -829,7 +829,15 @@ def _dispatch_authorized_once(
     from agent.terminal_approval_batch import prepare_current_terminal
     prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    # Transient sub-call progress: an execute_code dispatch installs the emitter its sandbox
+    # RPC threads (and session-kernel cell authorities) carry — see tools/subcall_progress.
+    from tools.subcall_progress import make_agent_emitter, reset_subcall_emitter, set_subcall_emitter
+    _subcall_token = set_subcall_emitter(make_agent_emitter(agent, ref.name)) if ref.name == "execute_code" else None
+    try:
+        return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    finally:
+        if _subcall_token is not None:
+            reset_subcall_emitter(_subcall_token)
 
 
 def _run_agent_tool_execution_middleware(
