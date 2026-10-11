@@ -196,3 +196,65 @@ class TestDefinitionWiringAtSpawn:
         child = children[0][2]
         assert not hasattr(child, "_agent_definition_body")
         assert child.model == "parent-model"
+
+
+class TestAgentMaxSteps:
+    """Per-agent tool-step cap (ported from openclaude's agent maxSteps): the definition
+    can only tighten the child's iteration budget; invalid values stay unlimited."""
+
+    def test_parse_max_steps_accepts_both_spellings_and_rejects_invalid(self, tmp_path):
+        from agent.agent_definition import _parse_agent_file
+
+        snake = tmp_path / "snake.md"
+        snake.write_text("---\nname: snake\nmax_steps: 8\n---\nBody.\n")
+        assert _parse_agent_file(snake).max_steps == 8
+
+        camel = tmp_path / "camel.md"
+        camel.write_text("---\nname: camel\nmaxSteps: 12\n---\nBody.\n")
+        assert _parse_agent_file(camel).max_steps == 12
+
+        for bad in ("0", "-3", "abc", "true", "1.5"):
+            md = tmp_path / f"bad_{bad.replace('.', '_')}.md"
+            md.write_text(f"---\nname: bad\nmax_steps: {bad}\n---\nBody.\n")
+            assert _parse_agent_file(md).max_steps is None, bad
+
+    def test_apply_sets_the_child_budget_when_none_exists(self):
+        from tools.delegate_tool import _apply_agent_definition
+        from agent.agent_definition import AgentDefinition
+
+        child = SimpleNamespace(enabled_toolsets=["web"], model="m")
+        parent = SimpleNamespace(enabled_toolsets=["web"])
+        mock_def = AgentDefinition(name="bounded", max_steps=8, body="")
+
+        with patch("agent.agent_definition.get_loader") as mock_get_loader:
+            mock_loader = MagicMock()
+            mock_loader.load.return_value = mock_def
+            mock_get_loader.return_value = mock_loader
+            _apply_agent_definition(child, "bounded", parent)
+
+        assert child.iteration_budget.max_total == 8
+
+    def test_apply_only_tightens_the_existing_budget(self):
+        from tools.delegate_tool import _apply_agent_definition
+        from agent.agent_definition import AgentDefinition
+        from agent.iteration_budget import IterationBudget
+
+        def _child_with_cap(cap):
+            return SimpleNamespace(
+                enabled_toolsets=["web"], model="m", iteration_budget=IterationBudget(cap),
+            )
+
+        parent = SimpleNamespace(enabled_toolsets=["web"])
+        with patch("agent.agent_definition.get_loader") as mock_get_loader:
+            mock_loader = MagicMock()
+            mock_get_loader.return_value = mock_loader
+
+            mock_loader.load.return_value = AgentDefinition(name="bounded", max_steps=8, body="")
+            smaller = _child_with_cap(3)
+            _apply_agent_definition(smaller, "bounded", parent)
+            assert smaller.iteration_budget.max_total == 3  # caller's tighter cap survives
+
+            mock_loader.load.return_value = AgentDefinition(name="bounded", max_steps=5, body="")
+            larger = _child_with_cap(50)
+            _apply_agent_definition(larger, "bounded", parent)
+            assert larger.iteration_budget.max_total == 5  # the definition tightens

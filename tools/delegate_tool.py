@@ -224,6 +224,16 @@ def _apply_agent_definition(child, role_name: str, parent_agent) -> None:
     if definition.model:
         child.model = definition.model
 
+    if definition.max_steps:
+        # Per-agent tool-step cap (ported from openclaude's agent maxSteps): the definition is the
+        # role's contract, so it can only TIGHTEN the child's iteration budget, never expand it —
+        # a caller that passed a smaller max_iterations keeps the smaller value.
+        from agent.iteration_budget import IterationBudget
+        current_budget = getattr(child, "iteration_budget", None)
+        current_cap = getattr(current_budget, "max_total", None)
+        if not isinstance(current_cap, int) or definition.max_steps < current_cap:
+            child.iteration_budget = IterationBudget(definition.max_steps)
+
     # Phase 5 — per-agent MCP servers (R9.1, R9.3, R9.4)
     if definition.mcp_servers:
         try:

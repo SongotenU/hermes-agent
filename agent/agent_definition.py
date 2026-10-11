@@ -2,7 +2,7 @@
 
 Phase 4 of harness-hardening project. Port of Claude Code's agent-def system:
 `.claude/agents/*.md` with YAML frontmatter (name, description, tools, model,
-mcp_servers) + markdown body that augments the system prompt.
+mcp_servers, max_steps) + markdown body that augments the system prompt.
 
 Precedence (highest wins):
 1. ~/.hermes/hermes-agent/agents/         (user)
@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from agent.skill_utils import yaml_load
 
@@ -31,7 +31,25 @@ class AgentDefinition:
     toolsets: Optional[list[str]] = None
     model: Optional[str] = None
     mcp_servers: Optional[list[str]] = None
+    max_steps: Optional[int] = None
     body: str = ""
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    """``int(value)`` when it is a positive integer-like (never a bool), else None.
+
+    Mirrors openclaude's maxSteps contract: omitting the field — or any invalid value
+    (0, negative, malformed, non-integer floats) — preserves the default unlimited behavior.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _parse_agent_file(path: Path) -> Optional[AgentDefinition]:
@@ -69,6 +87,7 @@ def _parse_agent_file(path: Path) -> Optional[AgentDefinition]:
         toolsets=meta.get("toolsets") or meta.get("tools"),
         model=meta.get("model"),
         mcp_servers=meta.get("mcp_servers"),
+        max_steps=_positive_int(meta.get("max_steps") or meta.get("maxSteps")),
         body=body,
     )
 
