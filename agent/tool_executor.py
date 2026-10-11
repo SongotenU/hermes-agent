@@ -51,6 +51,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from agent.tool_executor_blocks import _blocked_tool_result, _pre_tool_block
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -762,37 +763,6 @@ _PRUNED_TOOL_ARGUMENTS_MESSAGE = (
 )
 
 
-def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any] | None, block_error_type: str, guardrail_decision) -> str:
-    """Synthesize the result for a call blocked by scope/plugin/pruned-args (``block_body``, the
-    JSON the model sees) or by guardrail policy (``guardrail_decision``) and emit its terminal post_tool_call."""
-    if block_body is not None:
-        result = json.dumps(block_body, ensure_ascii=False)
-        error_type, error_message = block_error_type, block_body.get("message") or block_body["error"]
-    else:
-        result = agent._guardrail_block_result(guardrail_decision)
-        error_type = "guardrail_block"
-        error_message = getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy"
-    ref.emit_post(agent, result, status="blocked", error_type=error_type, error_message=error_message)
-    return result
-
-
-def _pre_tool_block(agent, ref: _ToolCallRef):
-    """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
-    hook-modified args applied. Hook failures never block."""
-    try:
-        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-
-        block_msg, modified_args = _dispatch_pre_tool_call_hooks(
-            ref.name,
-            ref.args,
-            **tool_hook_ids(agent, ref.task_id, ref.call_id),
-            middleware_trace=list(ref.trace),
-        )
-        return block_msg, (ref.args if modified_args is None else modified_args)
-    except Exception:
-        return None, ref.args
-
-
 def _dispatch_authorized_once(
     agent,
     state: _ManagedToolResult,
@@ -1187,8 +1157,11 @@ def _commit_tool_result(
     """Observe (``observed`` results only) and log the outcome; mark the tool done; persist/
     spill, hint, wrap and append the result; flush the session DB; project ``tool.completed``.
 
-    Blocked calls never ran, so they are neither guardrail-observed nor fed to the file-
-    mutation verifier; ``success_log_chars`` (sequential path) also logs the completion line.
+    Blocked calls never ran: they skip failure bookkeeping and the file-mutation verifier,
+    but their deterministic blocked result IS fed to the identical-call stall guard — a
+    model hammering the same denied call is exactly the loop worth breaking (DSH guard
+    invariant: blocked calls still count). ``success_log_chars`` (sequential path) also
+    logs the completion line.
     Returns ``(persisted_result, display_result, risk_metadata)`` (``display_result`` =
     pre-persist content for UI previews) or ``None`` when the flush failed (stop the batch).
     """
@@ -1200,6 +1173,13 @@ def _commit_tool_result(
         if not blocked:
             function_result = agent._append_guardrail_observation(
                 function_name, function_args, function_result, failed=is_error, tool_call_id=tool_call_id,
+            )
+        else:
+            # Blocked calls never ran, but hammering the same denied call is exactly the loop
+            # worth breaking (DSH guard invariant): feed the deterministic blocked result into
+            # the identical-call stall guard — never into failure bookkeeping, never stubbed.
+            function_result = agent._observe_blocked_call(
+                function_name, function_args, function_result, tool_call_id=tool_call_id,
             )
         if is_error:
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, error_preview(function_result))
