@@ -747,6 +747,12 @@ def test_gateway_formatter_renders_async_block():
     assert "ASYNC DELEGATION COMPLETE" in txt
     assert "Found the bug in test_foo" in txt
     assert "Investigate flaky test" in txt
+    # Provenance framing (DSH: subagent-settled ≠ agent-message): the child's report
+    # arrives INSIDE an explicit completion notice — it can never read as the child
+    # speaking for itself, and the report is delimited from the notice preamble.
+    assert "A background subagent you dispatched earlier has finished" in txt
+    assert "--- RESULT ---" in txt
+    assert txt.index("--- RESULT ---") < txt.index("Found the bug in test_foo")
 
 
 def test_gateway_cli_origin_event_left_unrouted():
