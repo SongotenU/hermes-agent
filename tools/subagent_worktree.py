@@ -46,6 +46,35 @@ def local_backend_active() -> bool:
         return True
 
 
+def is_inside_worktree(path: Optional[str]) -> bool:
+    """True if *path* already sits inside a git worktree (recursive guard).
+
+    A worktree's ``.git`` is a FILE holding a ``gitdir:`` pointer into
+    ``<repo>/.git/worktrees/<name>``; the main checkout's is a directory.
+    Detect the file form first, then fall back to the common-dir path for
+    layouts where ``.git`` is absent or unreadable. Without this guard a
+    subagent that is itself running in an isolated worktree would nest a
+    second one under it, and its child's terminal would sit two levels
+    deep from the real checkout.
+    """
+    candidate = os.path.abspath(os.path.expanduser(str(path))) if path else ""
+    if not candidate or not os.path.isdir(candidate):
+        return False
+    if os.path.isfile(os.path.join(candidate, ".git")):
+        return True
+    try:
+        common = _run_git(["rev-parse", "--git-common-dir"], cwd=candidate)
+    except Exception as exc:
+        logger.debug("subagent worktree: git-common-dir probe failed: %s", exc)
+        return False
+    git_dir = (common.stdout or "").strip()
+    if not git_dir:
+        return False
+    if not os.path.isabs(git_dir):
+        git_dir = os.path.abspath(os.path.join(candidate, git_dir))
+    return os.sep + ".git" + os.sep + "worktrees" + os.sep in git_dir + os.sep
+
+
 def resolve_repo_root(path: Optional[str]) -> Optional[str]:
     """Return the git toplevel for *path*, or None when not in a work tree."""
     candidate = os.path.abspath(os.path.expanduser(str(path))) if path else ""
@@ -74,6 +103,9 @@ def _ensure_gitignore_entry(repo_root: str) -> None:
 
 def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[dict[str, str]]:
     """Create an isolated worktree for one child; None (silent downgrade) outside git/on failure."""
+    if parent_cwd and is_inside_worktree(parent_cwd):
+        logger.debug("subagent worktree: parent already inside a worktree, recursive guard — skipping")
+        return None
     repo_root = resolve_repo_root(parent_cwd)
     if not repo_root:
         return None

@@ -1283,6 +1283,37 @@ class AIAgent(
             function_result = (function_result or "") + "\n\n" + stall_notice
         return function_result
 
+    def _observe_blocked_call(self, tool_name: str, function_args: dict, function_result: str, *,
+                              tool_call_id: str = "") -> str:
+        """Feed a BLOCKED call's deterministic result into the identical-call stall guard.
+
+        A blocked call never ran, but a model hammering the same denied call is exactly the
+        loop worth breaking (DSH guard invariant: blocked calls still count): the consecutive
+        identical-call and cycle counters must see it, so the streak escalates to a notice
+        and — under hard stops — a halt. Failure bookkeeping (``after_call``) stays untouched
+        (the call did not fail, it was denied) and blocked results are never stubbed.
+        """
+        if not self._stall_guards_enabled():
+            return function_result
+        try:
+            observation = self._tool_guardrails.observe_call(
+                tool_name, function_args, function_result if isinstance(function_result, str) else None,
+                tool_call_id=tool_call_id, failed=True,  # failed=True only suppresses the stub
+            )
+            stall_notice, stall_kind = observation.notice, observation.kind
+        except Exception:
+            logger.debug("blocked-call stall observation failed", exc_info=True)
+            return function_result
+        if stall_notice:
+            record_guardrail_warnings(self, None, stall_kind)
+        halt = self._tool_guardrails.halt_decision
+        if halt is not None and halt.code in ("identical_call_streak_halt", "identical_cycle_halt"):
+            function_result = append_toolguard_guidance(function_result, halt)
+            self._set_tool_guardrail_halt(halt)
+        if stall_notice:
+            function_result = (function_result or "") + "\n\n" + stall_notice
+        return function_result
+
     def _stall_guards_enabled(self) -> bool:
         """Config gate for the runtime anti-stall guards (agent.stall_guards)."""
         return bool(getattr(self, "_stall_guards", True))
