@@ -321,6 +321,19 @@ class ToolOutputRiskPayload(Payload):
 event("tool.output_risk", ToolOutputRiskPayload, doc="Tool output was classified as risky (prompt-injection / secret findings).")
 
 
+class ToolSubcallPayload(Payload):
+    """``tool_progress._progress_subcall``: a tool call made INSIDE execute_code (sandbox RPC)."""
+
+    name: str
+    preview: str = ""
+    parent: str = "execute_code"
+    duration_s: float = 0.0
+    error: str | None = None
+
+
+event("tool.subcall", ToolSubcallPayload, doc="Transient progress: a sandbox sub-call of execute_code finished (never durable).")
+
+
 class TodoUpdatedPayload(Payload):
     """``tool_progress._normalize_todo_state`` — full task snapshot."""
 

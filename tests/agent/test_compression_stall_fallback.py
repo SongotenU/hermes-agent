@@ -356,7 +356,7 @@ def _msgs():
     ]
 
 
-def _ok_response(content="SUMMARY BODY"):
+def _ok_response(content="SUMMARY BODY\n" + "Additional context retained for the summary fixture. " * 16):
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
     )

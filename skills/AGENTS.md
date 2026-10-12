@@ -16,10 +16,14 @@ Reviewing a skill PR: check the target directory — heavy-dep or niche skills g
 ## SKILL.md frontmatter
 
 `name`, `description`, `version`, `author`, `license`, `platforms` (OS gate: `[macos]`,
-`[linux, macos]`, ...), `metadata.hermes.tags`, `metadata.hermes.category`,
-`metadata.hermes.related_skills`, `metadata.hermes.config` (config.yaml settings the skill needs —
-stored under `skills.config.<key>`, prompted during setup, injected at load). Top-level `tags:` /
-`category:` are accepted and mirrored from `metadata.hermes.*` by the loader.
+`[linux, macos]`, ...), `user_invocable` / `model_invocable` (invocation-surface opt-outs,
+default true: `user_invocable: false` skips slash-command auto-registration, `model_invocable:
+false` hides the skill from the model index / `skills_list` and makes `skill_view` refuse
+model-initiated loads — user-initiated loads still work), `metadata.hermes.tags`,
+`metadata.hermes.category`, `metadata.hermes.related_skills`, `metadata.hermes.config`
+(config.yaml settings the skill needs — stored under `skills.config.<key>`, prompted during
+setup, injected at load). Top-level `tags:` / `category:` are accepted and mirrored from
+`metadata.hermes.*` by the loader.
 
 ## Authoring standards (HARDLINE — enforced by `tests/skills/test_authoring_standards.py`)
 

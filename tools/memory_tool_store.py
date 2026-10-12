@@ -24,6 +24,12 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
+# Bounded memory-file lock acquire (xai-grok-file-lock's bounded-wait invariant): the critical
+# section is milliseconds, so a wait past this deadline means a wedged holder (a SIGSTOP'd
+# sibling, a stalled network filesystem) — surface a clean error instead of hanging the turn.
+_FILE_LOCK_WAIT_SECONDS = 5.0
+_FILE_LOCK_POLL_SECONDS = 0.05
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Error string if *content* matches injection/exfil patterns. Strict scope:
@@ -189,17 +195,6 @@ class MemoryStore:
         Threat hits are replaced by a ``[BLOCKED: …]`` placeholder in the SNAPSHOT only;
         live lists keep the raw text so the user can see and remove poisoned entries
         (dropping them silently would hide the attack)."""
-        from tools.threat_patterns import scan_for_threats
-
-        def _sanitize(entry, filename):
-            # Strict scope, same as writes; empty / already-blocked entries pass through.
-            findings = scan_for_threats(entry, scope="strict") if entry and not entry.startswith("[BLOCKED:") else None
-            if not findings:
-                return entry
-            logger.warning("Memory entry from %s blocked at load time: %s", filename, ", ".join(findings))
-            return (f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
-                    f"Removed from system prompt; use memory(action=remove) to delete the original.]")
-
         for target in ("memory", "user"):
             path = self._path_for(target)
             from hermes_constants import mkdir_under_hermes_home
@@ -215,13 +210,56 @@ class MemoryStore:
                 logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
                                "further additions are blocked until it is back under the limit.",
                                path.name, count, limit)
-            self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
+            self._system_prompt_snapshot[target] = self._render_block(target, [self._sanitize_entry(e, path.name) for e in entries])
+
+    def _sanitize_entry(self, entry: str, filename: str) -> str:
+        """Strict-scope threat scan for the system-prompt SNAPSHOT only; live lists keep the raw
+        text so the user can see and remove poisoned entries (dropping them silently would hide
+        the attack)."""
+        from tools.threat_patterns import scan_for_threats
+
+        findings = scan_for_threats(entry, scope="strict") if entry and not entry.startswith("[BLOCKED:") else None
+        if not findings:
+            return entry
+        logger.warning("Memory entry from %s blocked at load time: %s", filename, ", ".join(findings))
+        return (f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
+                f"Removed from system prompt; use memory(action=remove) to delete the original.]")
+
+    def fresh_entries_from_disk(self, target: str) -> list[str]:
+        """Entries a fresh load would read now (dedup, order-preserving, snapshot-sanitized).
+        Read-only: never mutates live state or the frozen snapshot (memory_delta's disk side)."""
+        path = self._path_for(target)
+        entries = list(dict.fromkeys(self._read_file(path)))
+        return [self._sanitize_entry(e, path.name) for e in entries]
+
+    @staticmethod
+    def _acquire_bounded(fd, fcntl, msvcrt) -> None:
+        """Non-blocking lock acquire, polled to a deadline (grok-file-lock's bounded-wait
+        invariant — a blocking flock hangs the whole turn behind a wedged holder). Raises
+        ``TimeoutError`` once the deadline passes; the caller turns it into a clean error."""
+        deadline = time.monotonic() + _FILE_LOCK_WAIT_SECONDS
+        while True:
+            try:
+                if fcntl:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    fd.seek(0)
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"Timed out after {_FILE_LOCK_WAIT_SECONDS:.0f}s waiting for the memory file lock; "
+                        f"another process holds it and the write was not applied."
+                    ) from None
+                time.sleep(min(_FILE_LOCK_POLL_SECONDS, remaining))
 
     @staticmethod
     @contextmanager
     def _file_lock(path: Path):
         """Exclusive lock on a separate .lock file so the memory file itself can
-        still be atomically replaced."""
+        still be atomically replaced. Acquire is bounded (see ``_acquire_bounded``)."""
         from tools import memory_tool as _mt  # fcntl/msvcrt live (and are patched) there
         fcntl, msvcrt = _mt.fcntl, _mt.msvcrt
         lock_path = path.with_suffix(path.suffix + ".lock")
@@ -247,18 +285,18 @@ class MemoryStore:
             os.close(raw_fd)
             raise
         with fd:
-            def _flock(unlock: bool):
+            def _unlock():
                 if fcntl:
-                    fcntl.flock(fd, fcntl.LOCK_UN if unlock else fcntl.LOCK_EX)
+                    fcntl.flock(fd, fcntl.LOCK_UN)
                 else:
                     fd.seek(0)
-                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK if unlock else msvcrt.LK_LOCK, 1)
-            _flock(False)
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+            MemoryStore._acquire_bounded(fd, fcntl, msvcrt)
             try:
                 yield
             finally:
                 with suppress(OSError):
-                    _flock(True)
+                    _unlock()
 
     @staticmethod
     def _path_for(target: str) -> Path:
@@ -301,7 +339,21 @@ class MemoryStore:
                    **({"closest_entries": closest_entries} if closest_entries else {})))
 
     def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> dict[str, Any]:
-        """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
+        """Lock (bounded — a wedged holder returns a clean ``lock_timeout`` error, never a
+        hang), then ``_mutate_locked``."""
+        path = self._path_for(target)
+        try:
+            with self._file_lock(path):
+                return self._mutate_locked(target, path, mutate, skip_drift=skip_drift)
+        except TimeoutError:
+            return _error(
+                "Memory file is locked by another process and did not free up in time; the write was not "
+                "applied. Retry shortly — a stuck writer may need attention.",
+                "lock_timeout",
+            )
+
+    def _mutate_locked(self, target: str, path: Path, mutate, *, skip_drift: bool = False) -> dict[str, Any]:
+        """Re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
         or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
         file) and, unless *skip_drift*, on external drift (flushing would discard
@@ -311,25 +363,23 @@ class MemoryStore:
         convention) — e.g. the full text a replace overwrote (#117952). ANY dict the closure
         returns is passed through verbatim and nothing is persisted: error dicts, or the
         success payload of a read-only closure (``resolve_entry``, ``resolve_batch_entries``)."""
-        path = self._path_for(target)
-        with self._file_lock(path):
-            raw, read_ok = self._read_raw_checked(path)
-            if not read_ok:
-                return _read_failed_error(path)
-            bak = None if skip_drift else self._detect_external_drift(target, raw)
-            self._set_entries(target, list(dict.fromkeys(self._parse_entries(raw))))
-            if bak:
-                return _drift_error(path, bak)
-            result = mutate(self._entries_for(target), self._char_limit(target))
-            if isinstance(result, dict):
-                return result
-            self._set_entries(target, result[0])
-            from hermes_constants import mkdir_under_hermes_home
+        raw, read_ok = self._read_raw_checked(path)
+        if not read_ok:
+            return _read_failed_error(path)
+        bak = None if skip_drift else self._detect_external_drift(target, raw)
+        self._set_entries(target, list(dict.fromkeys(self._parse_entries(raw))))
+        if bak:
+            return _drift_error(path, bak)
+        result = mutate(self._entries_for(target), self._char_limit(target))
+        if isinstance(result, dict):
+            return result
+        self._set_entries(target, result[0])
+        from hermes_constants import mkdir_under_hermes_home
 
-            mkdir_under_hermes_home(path.parent)
-            self._write_file(path, result[0])
-            extra_fields = result[2] if len(result) > 2 else {}
-            return self._success_response(target, result[1], **extra_fields)
+        mkdir_under_hermes_home(path.parent)
+        self._write_file(path, result[0])
+        extra_fields = result[2] if len(result) > 2 else {}
+        return self._success_response(target, result[1], **extra_fields)
 
     def add(self, target: str, content: str) -> dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
