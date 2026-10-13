@@ -1017,3 +1017,44 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+class TestBoundedMemoryFileLock:
+    """The memory-file lock never blocks forever (xai-grok-file-lock's bounded-wait invariant):
+    the critical section is milliseconds, so a wedged holder surfaces as a clean lock_timeout
+    error instead of hanging the turn."""
+
+    def test_held_lock_times_out_with_a_clean_error_instead_of_hanging(self, store, monkeypatch):
+        from tools import memory_tool_store as mts
+
+        monkeypatch.setattr(mts, "_FILE_LOCK_WAIT_SECONDS", 0.2)
+        monkeypatch.setattr(mts, "_FILE_LOCK_POLL_SECONDS", 0.02)
+        path = store._path_for("memory")
+        with mts.MemoryStore._file_lock(path):
+            result = store.add("memory", "blocked write")
+        assert result["success"] is False
+        assert "locked" in result["error"]
+        # The write really did not land.
+        assert not path.exists() or "blocked write" not in path.read_text(encoding="utf-8")
+
+    def test_lock_acquire_raises_timeout_error_past_the_deadline(self, tmp_path, monkeypatch):
+        from tools import memory_tool_store as mts
+
+        monkeypatch.setattr(mts, "_FILE_LOCK_WAIT_SECONDS", 0.1)
+        monkeypatch.setattr(mts, "_FILE_LOCK_POLL_SECONDS", 0.02)
+        path = tmp_path / "MEMORY.md"
+        with mts.MemoryStore._file_lock(path):
+            with pytest.raises(TimeoutError):
+                with mts.MemoryStore._file_lock(path):
+                    pass
+
+    def test_lock_frees_for_the_next_writer_after_release(self, store, monkeypatch):
+        from tools import memory_tool_store as mts
+
+        monkeypatch.setattr(mts, "_FILE_LOCK_WAIT_SECONDS", 0.2)
+        path = store._path_for("memory")
+        with mts.MemoryStore._file_lock(path):
+            pass
+        result = store.add("memory", "after release")
+        assert result["success"] is True
+        assert "after release" in path.read_text(encoding="utf-8")

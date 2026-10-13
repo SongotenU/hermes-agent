@@ -96,8 +96,12 @@ def test_manual_compress_releases_lease_when_snapshot_check_raises(tmp_path, mon
         raise RuntimeError("validation failed")
 
     try:
-        with pytest.raises(RuntimeError, match="validation failed"):
-            compress_now(agent, before, parse_compress_args(""), snapshot_is_current=fail_validation)
+        # Failed compression is a structured result (not a raise): the taxonomy line
+        # reaches every surface via render_compress_result. The invariants below —
+        # lease released, agent and messages untouched — are the point of this test.
+        result = compress_now(agent, before, parse_compress_args(""), snapshot_is_current=fail_validation)
+        assert result.status == "failed" and result.failure_kind == "unknown"
+        assert "validation failed" in result.failure_message
         assert db.get_compression_lock_holder(parent) is None
         assert agent.session_id == parent
         assert db.get_messages_as_conversation(parent) == before
