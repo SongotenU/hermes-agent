@@ -45,6 +45,17 @@ def _contains(path: str, prefix: str) -> bool:
         return True
     return prefix.startswith(path) if path == os.sep else prefix.startswith(path + os.sep)
 
+# hermes_bootstrap's import-time activate_dependencies probes <repo>/../manifest.json
+# (sealed-payload venv detection: a venv shipped beside the checkout). From the default install
+# the checkout's parent IS the Hermes home, so that probe touches ~/.hermes/manifest.json —
+# the repo's own layout detection, not Hermes state. Upstream reads the manifest's CONTENTS
+# unconditionally (a missing/mistyped manifest must read as "not a payload", never as an error),
+# so exempt metadata probes AND read-only opens of exactly that path; writes stay refused.
+# Keys are normcased strings: absolute/resolved are strings in check() (upstream's fast path).
+_REPO_PARENT_MANIFEST_PROBES = {
+    _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent / "manifest.json")),
+}
+
 
 class HomeIOGuard:
     def __init__(self, roots, installed_apps=lambda: ()):
@@ -56,7 +67,7 @@ class HomeIOGuard:
         self.checking = threading.local()
         self.directories: dict[int, Path] = {}
 
-    def check(self, value, *, dir_fd=None, metadata=False, destructive=False):
+    def check(self, value, *, dir_fd=None, metadata=False, destructive=False, reading=False):
         if value is None or isinstance(value, int) or getattr(self.checking, "active", False):
             return
         self.checking.active = True
@@ -104,7 +115,9 @@ class HomeIOGuard:
             # tree merely to decide that the original path was forbidden.
             for root in roots:
                 if _within(absolute, root):
-                    self.refuse(value)
+                    if not ((metadata or reading) and absolute in _REPO_PARENT_MANIFEST_PROBES):
+                        self.refuse(value)
+                    return
             if resolved is None:
                 resolved = _normcase(os.path.realpath(absolute))
             if metadata and resolved in roots:
@@ -157,7 +170,7 @@ class HomeIOGuard:
         )
 
     def install(self, monkeypatch):
-        def wrap(module, name, parameters, *, metadata=False, destructive=False):
+        def wrap(module, name, parameters, *, metadata=False, destructive=False, reading=False):
             original = getattr(module, name)
 
             @wraps(original)
@@ -165,7 +178,8 @@ class HomeIOGuard:
                 for index, (parameter, descriptor) in enumerate(parameters):
                     value = args[index] if index < len(args) else kwargs.get(parameter)
                     self.check(value, dir_fd=kwargs.get(descriptor) if descriptor else None, metadata=metadata,
-                               destructive=destructive(args, kwargs) if callable(destructive) else destructive)
+                               destructive=destructive(args, kwargs) if callable(destructive) else destructive,
+                               reading=reading(args, kwargs) if callable(reading) else reading)
                 return original(*args, **kwargs)
 
             monkeypatch.setattr(module, name, guarded)
@@ -174,8 +188,11 @@ class HomeIOGuard:
             mode = args[1] if len(args) > 1 else kwargs.get("mode", "r")
             return any(flag in mode for flag in "wax+")
 
+        def open_reads(args, kwargs):
+            return not open_writes(args, kwargs)
+
         for module in (builtins, io):
-            wrap(module, "open", (("file", None),), destructive=open_writes)
+            wrap(module, "open", (("file", None),), destructive=open_writes, reading=open_reads)
         for name in ("mkdir", "unlink", "remove", "rmdir", "chmod", "utime"):
             wrap(os, name, (("path", "dir_fd"),), destructive=name != "mkdir")
         for name in ("stat", "lstat", "readlink", "access"):
@@ -191,7 +208,8 @@ class HomeIOGuard:
 
         @wraps(original_open)
         def guarded_open(path, flags, *args, **kwargs):
-            self.check(path, dir_fd=kwargs.get("dir_fd"), destructive=bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC)))
+            writes = bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC))
+            self.check(path, dir_fd=kwargs.get("dir_fd"), destructive=writes, reading=not writes)
             fd = original_open(path, flags, *args, **kwargs)
             candidate = Path(os.fsdecode(path))
             if kwargs.get("dir_fd") is not None and not candidate.is_absolute():
