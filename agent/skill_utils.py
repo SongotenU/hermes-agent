@@ -191,6 +191,45 @@ def skill_matches_apps(frontmatter: dict[str, Any]) -> bool:
     return True
 
 
+# Invocation-surface flags (ported from DeepSeek Harness' SkillInvocationPolicy): two independent
+# opt-outs a skill declares in its own frontmatter, both default true. ``model_invocable: false``
+# keeps the skill out of model-facing catalogs (prompt index, skills_list) and makes the
+# model-facing loader (skill_view tool) refuse; user-initiated loads (slash invocation, --skills
+# preload, auto-load) still work. ``user_invocable: false`` keeps the skill out of user-facing
+# offer surfaces (slash-command registration, palettes). An explicit-but-unparseable value keeps
+# the default rather than guessing.
+_TRUTHY_FRONTMATTER_FLAGS = frozenset({"true", "yes", "on", "1"})
+_FALSY_FRONTMATTER_FLAGS = frozenset({"false", "no", "off", "0"})
+
+
+def _frontmatter_flag(frontmatter: dict[str, Any], key: str, default: bool = True) -> bool:
+    """Read boolean frontmatter flag *key*; missing/invalid values keep *default*. YAML parses
+    real booleans, but the malformed-frontmatter line-splitter fallback yields strings."""
+    value = frontmatter.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUTHY_FRONTMATTER_FLAGS:
+            return True
+        if normalized in _FALSY_FRONTMATTER_FLAGS:
+            return False
+    return default
+
+
+def skill_user_invocable(frontmatter: dict[str, Any]) -> bool:
+    """False when ``user_invocable: false``: the skill opts out of user-facing offer surfaces."""
+    return _frontmatter_flag(frontmatter, "user_invocable")
+
+
+def skill_model_invocable(frontmatter: dict[str, Any]) -> bool:
+    """False when ``model_invocable: false``: the skill opts out of model-facing catalogs and the
+    model-facing loader, while staying available to user-initiated loads."""
+    return _frontmatter_flag(frontmatter, "model_invocable")
+
+
 _RAW_CONFIG_CACHE: dict[tuple[str, int, int, int, int], dict[str, Any]] = {}
 
 
@@ -384,6 +423,16 @@ def display_skill_create_dir() -> str:
 TIER_PROJECT, TIER_LOCAL, TIER_CREATE_DIR, TIER_EXTERNAL = range(4)
 # Leading words of every same-tier refusal (skill_view error, preload/cron label) — one spelling.
 AMBIGUOUS_SKILL_PREFIX = "Ambiguous skill name "
+
+# Canonical guidance for skill-relative paths, shared by every surface that loads a skill
+# (slash/auto-load invocation messages in agent.skill_commands, and the skill_view result):
+# a model acting on the skill must resolve e.g. ``scripts/foo.js`` against the skill's own
+# directory — never the session cwd — then run it by absolute path.
+SKILL_DIR_NOTE = (
+    "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
+    "`templates/config.yaml`) against that directory, then run them "
+    "with the terminal tool using the absolute path."
+)
 # (shadowed path, *sorted higher-tier paths) already judged: the identity check (it hashes both
 # SKILL.md files) and its one-time warning run once per pairing, not on every catalog resolve.
 _SHADOW_CHECKED: set[tuple[str, ...]] = set()

@@ -69,6 +69,35 @@ function appliedLayout(name: string | undefined, result: ToolCallMessagePart['re
   return undefined
 }
 
+// A stopped turn can still emit a frame or two before the backend notices; naming work
+// we will never run leaves the label up until something else retires it. `mutateStream`
+// drops late tool rows on the same condition; the status line has to agree with it.
+function isInterruptedFrame(
+  sessionId: string | null | undefined,
+  sessionInterrupted: (sessionId: string) => boolean
+): boolean {
+  return !sessionId || sessionInterrupted(sessionId)
+}
+
+// A tool call made INSIDE execute_code (sandbox RPC): progress chrome only — the
+// sandbox's calls are not transcript rows (they live in the tool's own call log),
+// so name the activity on the same transient status line as a drafting call.
+function applySubcallProgress(ctx: GatewayEventContext): boolean {
+  const { deps, payload, sessionId, isActiveEvent } = ctx
+
+  if (isInterruptedFrame(sessionId, deps.sessionInterrupted)) {
+    return true
+  }
+
+  setSessionDraftingTool(sessionId, typeof payload?.name === 'string' ? payload.name : '')
+
+  if (isActiveEvent) {
+    setPetActivity({ reasoning: false, toolRunning: true })
+  }
+
+  return true
+}
+
 /** tool.generating / tool.start / tool.complete / subagent.*. */
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
@@ -88,11 +117,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     // from it strands an argless placeholder whenever the bubble is sealed
     // before the real `tool.start` arrives, because the two can no longer be
     // reconciled across the boundary. It's a status, so say it as one.
-    // A stopped turn can still emit a frame or two before the backend
-    // notices, and naming a tool we will never run leaves the label up
-    // until something else retires it. `mutateStream` drops late tool rows
-    // on the same condition; the status line has to agree with it.
-    if (!sessionId || sessionInterrupted(sessionId)) {
+    if (isInterruptedFrame(sessionId, sessionInterrupted)) {
       return true
     }
 
@@ -103,6 +128,10 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     }
 
     return true
+  }
+
+  if (event.type === 'tool.subcall') {
+    return applySubcallProgress(ctx)
   }
 
   if (event.type === 'tool.start') {

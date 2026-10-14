@@ -50,6 +50,26 @@ def _terminal_columns(default: int = 80) -> int:
         return default
 
 
+def _spinner_only_progress_text(event_type: str, function_name: str | None, kwargs: dict, current: str) -> str:
+    """Spinner label for spinner-only progress events; the current text when unchanged.
+
+    ``moa.aggregating`` names the aggregator; ``tool.subcall`` is a tool call made INSIDE
+    execute_code (sandbox RPC) — transient chrome while the script keeps running, nothing
+    lands in scrollback.
+    """
+    if event_type == "tool.subcall":
+        sub = function_name or ""
+        if not sub or sub.startswith("_"):
+            return current
+        from agent.display import tool_row_emoji
+        parent = str(kwargs.get("parent") or "execute_code")
+        duration = kwargs.get("duration")
+        suffix = f" ({duration:.1f}s)" if isinstance(duration, (int, float)) and duration else ""
+        return f"{tool_row_emoji(sub)} {parent} → {sub}{suffix}"
+    agg = function_name or ""
+    return t("cli.stream.aggregating_detail", detail=agg) if agg else t("cli.stream.aggregating")
+
+
 class CLIStreamMixin:
     """Streaming output, reasoning preview, tool progress callbacks, and busy-command spinner for the interactive CLI"""
 
@@ -691,9 +711,8 @@ class CLIStreamMixin:
                     _cprint(f"  {_DIM}{text.strip()}{_RST}")
             self._invalidate()
             return
-        if event_type == "moa.aggregating":
-            agg = function_name or ""
-            self._spinner_text = t("cli.stream.aggregating_detail", detail=agg) if agg else t("cli.stream.aggregating")
+        if event_type in ("moa.aggregating", "tool.subcall"):
+            self._spinner_text = _spinner_only_progress_text(event_type, function_name, kwargs, self._spinner_text)
             self._invalidate()
             return
 
