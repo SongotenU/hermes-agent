@@ -44,7 +44,7 @@ None. No user-authored questions exist.
 
 ## Historical Pending User Asks
 None. No user-authored requests exist.
-"""
+""" + "Additional context retained for the summary fixture. " * 16
 
 
 def _assistant_tool_turns(start: int, count: int) -> list[dict]:
