@@ -11,7 +11,7 @@ from typing import Any, Dict, Mapping, Optional
 from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
-from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
+from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX, SKILL_DIR_NOTE
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ _SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
 # describer strips the header + body and renders the typed request (session previews, titles).
 _AUTO_LOAD_PREFIX = '[IMPORTANT: The "'
 _AUTO_LOAD_SUFFIX_RE = re.compile(r'" skill is auto-loaded\. Follow its instructions for this session\.\]')
-# Closing sentence of the skill-directory footer note (see _SKILL_DIR_NOTE in this module):
+# Closing sentence of the skill-directory footer note (see SKILL_DIR_NOTE in agent.skill_utils):
 # the last thing in every built payload, so it marks where an auto-load payload ends and the
 # next payload or the user's typed text begins.
 _SKILL_DIR_NOTE_END = "then run them with the terminal tool using the absolute path."
@@ -322,16 +322,6 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         pass
 
 
-_SKILL_DIR_NOTE = (
-    "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
-    "`templates/config.yaml`) against that directory, then run them "
-    "with the terminal tool using the absolute path."
-)
-# Closing text of the optional blocks _build_skill_message appends after the directory note; the
-# auto-load describer skips them so they are never read as the user's typed request.
-_SUPPORTING_FILES_END = "/scripts/foo.js`)."
-_TRAILING_BLOCK_ENDS = (("[Skill config (", "\n]"), ("[Skill setup note: ", "]\n\n"),
-                        ("[This skill has supporting files", _SUPPORTING_FILES_END))
 _SETUP_SKIPPED_NOTE = (
     "Required environment setup was skipped. Continue loading the skill "
     "and explain any reduced functionality if it matters."
@@ -376,7 +366,7 @@ def _build_skill_message(
     parts = [activation_note, "", content.strip()]
     # Absolute skill dir lets the agent run bundled scripts without a skill_view() round-trip.
     if skill_dir:
-        parts += ["", f"[Skill directory: {skill_dir}]", _SKILL_DIR_NOTE]
+        parts += ["", f"[Skill directory: {skill_dir}]", SKILL_DIR_NOTE]
     _inject_skill_config(loaded_skill, parts)
     setup_note = _setup_note(loaded_skill)
     if setup_note:
@@ -474,12 +464,18 @@ def skill_command_collision_note(name: str) -> Optional[str]:
 
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
-    from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
+    from tools.skills_tool import (
+        _parse_frontmatter, skill_matches_apps, skill_matches_environment, skill_matches_platform,
+        skill_user_invocable)
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
         return
     frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8-sig'))
     # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
     if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
+        return
+    # user_invocable: false — the skill opts out of the user-facing slash surface entirely
+    # (model index/skill_view are controlled by model_invocable, not this flag).
+    if not skill_user_invocable(frontmatter):
         return
     name = frontmatter.get('name', skill_md.parent.name)
     if name in seen_names or name in disabled:
@@ -625,7 +621,7 @@ def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> dict[str
     global _plugin_skill_commands, _plugin_skill_commands_tag
     from tools.skills_tool import (
         _parse_frontmatter, skill_matches_apps, skill_matches_environment,
-        skill_matches_platform,
+        skill_matches_platform, skill_user_invocable,
     )
 
     commands: dict[str, dict[str, Any]] = {}
@@ -642,6 +638,9 @@ def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> dict[str
             continue
         # Offer from the file we will actually load, not registration-time hints.
         if not (skill_matches_platform(parsed) and skill_matches_environment(parsed) and skill_matches_apps(parsed)):
+            continue
+        # user_invocable: false — plugin skill opts out of the user-facing slash surface.
+        if not skill_user_invocable(parsed):
             continue
         key = f"/{qualified.lower()}"
         if skill_command_collision_note(qualified) is not None or key in commands:
