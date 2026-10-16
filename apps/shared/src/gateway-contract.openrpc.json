@@ -43140,6 +43140,48 @@
         "title": "ToolStartPayload",
         "type": "object"
       },
+      "ToolSubcallPayload": {
+        "additionalProperties": false,
+        "description": "``tool_progress._progress_subcall``: a tool call made INSIDE execute_code (sandbox RPC).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "preview": {
+            "default": "",
+            "title": "Preview",
+            "type": "string"
+          },
+          "parent": {
+            "default": "execute_code",
+            "title": "Parent",
+            "type": "string"
+          },
+          "duration_s": {
+            "default": 0.0,
+            "title": "Duration S",
+            "type": "number"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ToolSubcallPayload",
+        "type": "object"
+      },
       "ToolsAction": {
         "enum": [
           "enable",
@@ -48271,6 +48313,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ToolStartPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "tool.subcall",
+      "summary": "Transient progress: a sandbox sub-call of execute_code finished (never durable).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ToolSubcallPayload"
           }
         }
       ]

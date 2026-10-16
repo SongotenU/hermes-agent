@@ -114,6 +114,10 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
     if error:
         entry["error"] = error
     tool_call_log.append(entry)
+    # Transient surface progress for this sandbox call (no-op outside an execute_code
+    # dispatch — the emitter rides the dispatch's context, see tools/subcall_progress).
+    from tools.subcall_progress import emit_subcall
+    emit_subcall(tool_name, entry["args_preview"], entry["duration"], entry.get("error"))
     return result
 
 
