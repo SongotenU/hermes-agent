@@ -8,6 +8,7 @@ observe → commit → project pipeline so the tool-result wire shape is produce
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import contextlib
 import json
@@ -52,6 +53,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from agent.tool_executor_blocks import _blocked_tool_result, _pre_tool_block
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -193,6 +195,115 @@ def _resolve_concurrent_tool_timeout() -> float | None:
         default=_DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
         env_var="HERMES_CONCURRENT_TOOL_TIMEOUT_S",
     )
+
+
+# =============================================================================
+# Callback Deadline Budgets (Phase 3 R1)
+# =============================================================================
+
+def _resolve_callback_deadline(tool_entry, kind: str) -> float | None:
+    """Resolve deadline budget for a specific callback kind.
+    
+    Priority: per-tool callback_deadline > global config > None (disabled)
+    
+    Args:
+        tool_entry: ToolEntry with optional callback_deadline dict
+        kind: One of "check_fn", "pre_hook", "post_hook"
+    
+    Returns:
+        Deadline in seconds, or None if not configured (no enforcement)
+    """
+    # 1. Per-tool override wins
+    if tool_entry.callback_deadline is not None:
+        deadline = tool_entry.callback_deadline.get(kind)
+        if deadline is not None:
+            return float(deadline)
+    
+    # 2. Fall back to global config
+    try:
+        from hermes_cli.config import load_config
+        config = load_config() or {}
+        tools_config = config.get("tools", {})
+        callback_deadlines = tools_config.get("callback_deadlines", {})
+        deadline = callback_deadlines.get(kind)
+        if deadline is not None:
+            return float(deadline)
+    except Exception:
+        pass
+    
+    # 3. Not configured = no enforcement
+    return None
+
+
+async def _run_with_deadline(coro, deadline_s: float | None, tool_name: str, callback_kind: str) -> Any:
+    """Run a coroutine with a deadline budget.
+    
+    If deadline exceeded: logs structured warning and returns None (fail-open).
+    If no deadline: runs normally.
+    
+    Args:
+        coro: Coroutine to run
+        deadline_s: Deadline in seconds, or None to disable
+        tool_name: Name of the tool (for logging)
+        callback_kind: Type of callback (for logging)
+    
+    Returns:
+        Result of coroutine, or None if deadline exceeded
+    """
+    if deadline_s is None:
+        return await coro
+    
+    try:
+        start = time.monotonic()
+        result = await asyncio.wait_for(coro, timeout=deadline_s)
+        return result
+    except TimeoutError:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.warning(
+            "callback_deadline_exceeded",
+            extra={
+                "tool_name": tool_name,
+                "callback_kind": callback_kind,
+                "budget_s": deadline_s,
+                "elapsed_ms": elapsed_ms,
+            }
+        )
+        return None
+    except Exception:
+        # Any other exception propagates normally
+        raise
+
+
+def _run_sync_with_deadline(fn, deadline_s: float | None, tool_name: str, callback_kind: str) -> Any:
+    """Run a sync function with a deadline budget using a thread pool.
+    
+    If deadline exceeded: logs structured warning and returns None (fail-open).
+    If no deadline: runs normally.
+    """
+    if deadline_s is None:
+        return fn()
+    
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        try:
+            start = time.monotonic()
+            result = future.result(timeout=deadline_s)
+            return result
+        except concurrent.futures.TimeoutError:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logger.warning(
+                "callback_deadline_exceeded",
+                extra={
+                    "tool_name": tool_name,
+                    "callback_kind": callback_kind,
+                    "budget_s": deadline_s,
+                    "elapsed_ms": elapsed_ms,
+                }
+            )
+            return None
+        except Exception:
+            raise
 
 
 def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) -> bool:
@@ -654,37 +765,6 @@ _PRUNED_TOOL_ARGUMENTS_MESSAGE = (
 )
 
 
-def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any] | None, block_error_type: str, guardrail_decision) -> str:
-    """Synthesize the result for a call blocked by scope/plugin/pruned-args (``block_body``, the
-    JSON the model sees) or by guardrail policy (``guardrail_decision``) and emit its terminal post_tool_call."""
-    if block_body is not None:
-        result = json.dumps(block_body, ensure_ascii=False)
-        error_type, error_message = block_error_type, block_body.get("message") or block_body["error"]
-    else:
-        result = agent._guardrail_block_result(guardrail_decision)
-        error_type = "guardrail_block"
-        error_message = getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy"
-    ref.emit_post(agent, result, status="blocked", error_type=error_type, error_message=error_message)
-    return result
-
-
-def _pre_tool_block(agent, ref: _ToolCallRef):
-    """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
-    hook-modified args applied. Hook failures never block."""
-    try:
-        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-
-        block_msg, modified_args = _dispatch_pre_tool_call_hooks(
-            ref.name,
-            ref.args,
-            **tool_hook_ids(agent, ref.task_id, ref.call_id),
-            middleware_trace=list(ref.trace),
-        )
-        return block_msg, (ref.args if modified_args is None else modified_args)
-    except Exception:
-        return None, ref.args
-
-
 def _dispatch_authorized_once(
     agent,
     state: _ManagedToolResult,
@@ -751,7 +831,15 @@ def _dispatch_authorized_once(
     from agent.terminal_approval_batch import prepare_current_terminal
     prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    # Transient sub-call progress: an execute_code dispatch installs the emitter its sandbox
+    # RPC threads (and session-kernel cell authorities) carry — see tools/subcall_progress.
+    from tools.subcall_progress import make_agent_emitter, reset_subcall_emitter, set_subcall_emitter
+    _subcall_token = set_subcall_emitter(make_agent_emitter(agent, ref.name)) if ref.name == "execute_code" else None
+    try:
+        return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    finally:
+        if _subcall_token is not None:
+            reset_subcall_emitter(_subcall_token)
 
 
 def _run_agent_tool_execution_middleware(
@@ -1082,8 +1170,11 @@ def _commit_tool_result(
     """Observe (``observed`` results only) and log the outcome; mark the tool done; persist/
     spill, hint, wrap and append the result; flush the session DB; project ``tool.completed``.
 
-    Blocked calls never ran, so they are neither guardrail-observed nor fed to the file-
-    mutation verifier; ``success_log_chars`` (sequential path) also logs the completion line.
+    Blocked calls never ran: they skip failure bookkeeping and the file-mutation verifier,
+    but their deterministic blocked result IS fed to the identical-call stall guard — a
+    model hammering the same denied call is exactly the loop worth breaking (DSH guard
+    invariant: blocked calls still count). ``success_log_chars`` (sequential path) also
+    logs the completion line.
     Returns ``(persisted_result, display_result, risk_metadata)`` (``display_result`` =
     pre-persist content for UI previews) or ``None`` when the flush failed (stop the batch).
     """
@@ -1097,6 +1188,13 @@ def _commit_tool_result(
         if not blocked:
             function_result = agent._append_guardrail_observation(
                 function_name, function_args, function_result, failed=is_error, tool_call_id=tool_call_id,
+            )
+        else:
+            # Blocked calls never ran, but hammering the same denied call is exactly the loop
+            # worth breaking (DSH guard invariant): feed the deterministic blocked result into
+            # the identical-call stall guard — never into failure bookkeeping, never stubbed.
+            function_result = agent._observe_blocked_call(
+                function_name, function_args, function_result, tool_call_id=tool_call_id,
             )
         if is_error:
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, error_preview(function_result))
