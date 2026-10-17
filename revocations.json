@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "entries": [],
+  "_usage": "Administrator skill revocations (tools/skills_revocations.py). Add an entry to the 'entries' list; an entry matches when EVERY field it names matches. Fields: id (skill name), version, digest ('sha256:<16 or 64 hex>' — the full content digest, matched by prefix so a 16-hex form also works), source ('official', 'github', ...), plus an optional 'reason'. Entry examples: {\"id\": \"bad-skill\"}, {\"id\": \"bad-skill\", \"version\": \"1.2.0\"}, {\"digest\": \"sha256:aaaaaaaabbbbbbbbccccccccdddddddd\"}, {\"id\": \"bad-skill\", \"reason\": \"creator shipped malicious variant\"}. Install-time matches are HARD blocks; --force does NOT override a revocation. Runtime reads ~/.hermes/skills-revocations.json (HERMES_SKILLS_REVOCATIONS override); this repo copy is the admin record — copy/sync it into place with git.",
+  "_empty_by_default": "Ship with an empty list; entries come from you (admin) only."
+}
