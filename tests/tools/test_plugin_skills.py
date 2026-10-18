@@ -385,6 +385,57 @@ class TestSkillViewQualifiedName:
         assert "no longer exists" in result["error"]
         assert self.pm.find_plugin_skill("superpowers:writing-plans") is None
 
+    def test_model_initiated_view_refuses_model_hidden_plugin_skill(self, tmp_path):
+        """`model_invocable: false` on a plugin skill: the model tool path refuses,
+        the user path (slash/preload — skill_view default) still loads."""
+        from tools.skills_tool import _skill_view_with_bump, skill_view
+
+        self._register_skill(
+            tmp_path,
+            content=("---\nname: writing-plans\ndescription: desc\n"
+                     "model_invocable: false\n---\n\nwriting-plans body.\n"),
+        )
+
+        model_result = json.loads(
+            _skill_view_with_bump({"name": "superpowers:writing-plans"}, task_id=None))
+        assert model_result["success"] is False
+        assert "model_invocable" in model_result["error"]
+
+        user_result = json.loads(skill_view("superpowers:writing-plans"))
+        assert user_result["success"] is True
+        assert "writing-plans body." in user_result["content"]
+
+    def test_user_invocable_false_skips_plugin_slash_command(self, tmp_path):
+        """`user_invocable: false` on a plugin skill: no `/plugin:skill` registration,
+        while the model surface (index/view) is untouched."""
+        from agent import skill_commands as sc
+
+        self._register_skill(
+            tmp_path,
+            content=("---\nname: writing-plans\ndescription: desc\n"
+                     "user_invocable: false\n---\n\nwriting-plans body.\n"),
+        )
+        sc.invalidate_plugin_skill_commands()
+        try:
+            commands = sc.get_plugin_skill_commands()
+        finally:
+            sc.invalidate_plugin_skill_commands()
+
+        assert "/superpowers:writing-plans" not in commands
+
+    def test_plugin_slash_command_registers_without_flags(self, tmp_path):
+        """Control: without flags the plugin skill registers as usual."""
+        from agent import skill_commands as sc
+
+        self._register_skill(tmp_path)
+        sc.invalidate_plugin_skill_commands()
+        try:
+            commands = sc.get_plugin_skill_commands()
+        finally:
+            sc.invalidate_plugin_skill_commands()
+
+        assert "/superpowers:writing-plans" in commands
+
 class TestSkillViewPluginGuards:
     @pytest.fixture(autouse=True)
     def _isolate(self, tmp_path, monkeypatch):
