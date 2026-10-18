@@ -730,6 +730,27 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     origin_session_id TEXT NOT NULL DEFAULT ''
 );
 
+-- Approval audit pair (DeepSeek Harness port): every human approval ask
+-- (``asked``) is durably paired with its decision (``decided``) under one
+-- fresh ``request_id``, carrying the turn/tool-call/session correlation ids
+-- bound by tools.approval_context. Log-only: never part of the model
+-- transcript. Writes are best-effort (hermes_state_approvals) and rows
+-- cascade with their session.
+CREATE TABLE IF NOT EXISTS approval_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL DEFAULT '' REFERENCES sessions(id) ON DELETE CASCADE,
+    request_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    outcome TEXT,
+    choice TEXT,
+    surface TEXT NOT NULL DEFAULT '',
+    pattern_key TEXT NOT NULL DEFAULT '',
+    turn_id TEXT NOT NULL DEFAULT '',
+    tool_call_id TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    timestamp REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -750,6 +771,8 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_approval_events_session ON approval_events(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_approval_events_request ON approval_events(request_id);
 """
 
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.
