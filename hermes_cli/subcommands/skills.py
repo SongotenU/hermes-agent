@@ -174,4 +174,10 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_subparsers.add_parser(
         "config", help="Interactive skill configuration — enable/disable individual skills")
 
+    skills_subparsers.add_parser(
+        "revocations", help="Show the skill revocations list and verify installed skills",
+        description="Administrator revocations: prints the resolved revocations.json, the "
+            "entries, and whether any INSTALLED hub skill matches one (revoked). Install-time "
+            "matches are hard blocks; --force does not override a revocation.")
+
     skills_parser.set_defaults(func=cmd_skills)
