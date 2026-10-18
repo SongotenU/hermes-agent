@@ -380,6 +380,18 @@ def _progress_output_risk(sid, name, preview, kw):
         })
 
 
+def _progress_subcall(sid, name, preview, kw):
+    # Transient progress for a tool call made INSIDE execute_code (sandbox RPC): activity
+    # chrome only, never a transcript row. Follows display.tool_progress like other tool chrome.
+    if name and _tool_progress_enabled(sid):
+        _emit("tool.subcall", sid, {
+            "name": str(name), "preview": str(preview or ""),
+            "parent": str(kw.get("parent") or "execute_code"),
+            "duration_s": float(kw.get("duration") or 0.0),
+            "error": str(kw["error"]) if kw.get("error") else None,
+        })
+
+
 def _progress_reasoning(sid, name, preview, kw):
     if not _session_show_reasoning(sid):
         return
@@ -485,6 +497,7 @@ def _progress_subagent(sid: str, name: str, preview, kw, event_type):
 # emitted at all ("name" / "preview" / None).
 _PROGRESS_HANDLERS = {
     "tool.output_risk": (_progress_output_risk, "name"), "reasoning.available": (_progress_reasoning, "preview"),
+    "tool.subcall": (_progress_subcall, "name"),
     "moa.reference": (_progress_moa_reference, "name"),
     # Answer-only drops MoA content (references, progress/phase lines that land in the reasoning
     # disclosure or activity log) but keeps this: a bare state transition both clients use only
