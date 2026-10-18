@@ -8,8 +8,11 @@ here so ``--preview`` / ``--aggressive`` and the lock-skip wording cannot drift 
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 #: Every surface renders the same refusal; hard truncation has no persistence path outside the guarded
 #: ``_compress_context`` rotation, so ``--aggressive`` is refused rather than mis-parsed as a focus topic.
@@ -31,7 +34,7 @@ class CompressRequest:
 
 @dataclass
 class CompressResult:
-    status: str  # "preview" | "compressed" | "lock_skipped" | "nothing_to_do"
+    status: str  # "preview" | "compressed" | "lock_skipped" | "nothing_to_do" | "failed"
     before_messages: list[dict[str, Any]]
     after_messages: list[dict[str, Any]]
     before_tokens: int
@@ -40,10 +43,44 @@ class CompressResult:
     lines: list[str] = field(default_factory=list)  # preview report lines (status == "preview")
     lock_holder: Any = None
     summary: Optional[dict[str, Any]] = None  # ``summarize_manual_compression`` payload when compressed
+    # status == "failed": the taxonomy code from ``classify_compress_failure`` and the raw
+    # error text. A failed manual compression never mutated the conversation.
+    failure_kind: str = ""
+    failure_message: str = ""
 
     @property
     def removed(self) -> int:
         return len(self.before_messages) - len(self.after_messages)
+
+
+def classify_compress_failure(exc: BaseException) -> str:
+    """Taxonomy code for a failed manual /compress (DeepSeek-Harness-inspired stages).
+
+    Codes: ``changed`` (held history went stale under the attempt), ``cancelled``
+    (the attempt was aborted mid-flight), ``checkpoint`` (the pre-compression
+    memory checkpoint could not be written), ``persistence`` (the session store
+    was unavailable), ``unknown`` (anything else — the raw message stays visible).
+
+    Deliberately conservative: only shapes this module can actually name map to a
+    code. In-band degradations are NOT failures and keep their own reporting —
+    lock contention is the ``lock_skipped`` status, and summary-stage fallback /
+    abort rides the ``summary`` payload's flags (``aborted`` / ``fallback_used``).
+    """
+    from agent.context_compressor import StaleHeldHistory
+    from agent.conversation_compression import CompressionCheckpointUnavailable
+
+    if isinstance(exc, StaleHeldHistory):
+        return "changed"
+    if isinstance(exc, CompressionCheckpointUnavailable):
+        return "checkpoint"
+    if isinstance(exc, InterruptedError):
+        return "cancelled"
+    text = str(exc).lower()
+    if "cancel" in text:
+        return "cancelled"
+    if "database is locked" in text or "disk i/o error" in text or "unable to open database" in text:
+        return "persistence"
+    return "unknown"
 
 
 def parse_compress_args(raw_args: str) -> CompressRequest:
@@ -131,9 +168,19 @@ def compress_now(
             defer_context_engine_notification=True, **({"task_id": task_id} if task_id != "default" else {}),
             **({"snapshot_is_current": snapshot_is_current} if snapshot_is_current is not None else {}),
             **({"verbatim_tail": tail_rows} if tail_rows else {}))
-    except Exception:
+    except Exception as exc:
+        # Structured failure instead of a bare raise: every surface renders the same
+        # taxonomy line (render_compress_result) and the conversation is unchanged.
+        # KeyboardInterrupt / BaseException still propagate (a real interrupt is not a
+        # "failed compression" outcome to swallow). Traceback logged: deliberate
+        # catch-all boundary.
+        logger.exception("Manual compression failed (%s)", type(exc).__name__)
         finalize_context_engine_compression_notification(agent, committed=False)
-        raise
+        return CompressResult(
+            "failed", before, before, before_tokens, before_tokens, request,
+            failure_kind=classify_compress_failure(exc),
+            failure_message=str(exc) or exc.__class__.__name__,
+        )
     # Type-pinned (is True / str): bare truthiness is fooled by MagicMock auto-attributes on test doubles.
     lock_signal = getattr(agent, "_compression_skipped_due_to_lock", None)
     if lock_signal is True or isinstance(lock_signal, str):
@@ -157,6 +204,9 @@ def render_compress_result(result: CompressResult, *, prefix: str = "") -> list[
     if result.status == "lock_skipped":
         from agent.manual_compression_feedback import describe_compression_lock_skip
         return [f"{prefix}{describe_compression_lock_skip(result.lock_holder or True)}"]
+    if result.status == "failed":
+        from agent.manual_compression_feedback import describe_compression_failure
+        return [f"{prefix}{describe_compression_failure(result.failure_kind, result.failure_message)}"]
     if result.status == "nothing_to_do":
         return [f"{prefix}Nothing to compress yet."]
     summary = result.summary or {}

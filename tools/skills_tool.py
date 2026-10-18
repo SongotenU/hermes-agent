@@ -17,7 +17,8 @@ from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, SKILL_DIR_NOTE,
+    is_skill_support_path as _is_skill_support_path)
 from tools.skills_tool_setup import (
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -161,6 +162,8 @@ skill_matches_platform = _skill_utils_delegate("skill_matches_platform")
 # Offer-time relevance gate (kanban/docker/s6), NOT hard compatibility; explicit loads bypass it.
 skill_matches_environment = _skill_utils_delegate("skill_matches_environment")
 skill_matches_apps = _skill_utils_delegate("skill_matches_apps")
+skill_user_invocable = _skill_utils_delegate("skill_user_invocable")
+skill_model_invocable = _skill_utils_delegate("skill_model_invocable")
 _parse_frontmatter = _skill_utils_delegate("parse_frontmatter")
 _get_disabled_skill_names = _skill_utils_delegate("get_disabled_skill_names")
 
@@ -259,9 +262,10 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                     "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
                     "description": _truncate_description(description),
                     "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
-                    "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
-                                                      and skill_matches_environment(frontmatter)
-                                                      and skill_matches_apps(frontmatter))})
+                    "path": skill_md, "model_invocable": skill_model_invocable(frontmatter),
+                    "visible": bool(skill_matches_platform(frontmatter)
+                                    and skill_matches_environment(frontmatter)
+                                    and skill_matches_apps(frontmatter))})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
@@ -274,12 +278,14 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     return [dict(s) for s in skills]
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False, include_model_hidden: bool = True) -> list[dict[str, Any]]:
     """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
     the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
-    unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
+    unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI);
+    ``include_model_hidden=False`` drops `model_invocable: false` skills (model-facing listings)."""
     return [{"name": s["load_name"], "description": s["description"], "category": s["category"]}
-            for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
+            for s in _skill_catalog(skip_disabled=skip_disabled)
+            if s["load_name"] and (include_model_hidden or s.get("model_invocable", True))]
 
 
 def _sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -291,13 +297,14 @@ def skills_list(category: str | None = None, task_id: str | None = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
-        all_skills = _find_all_skills()
+        all_skills = _find_all_skills(include_model_hidden=False)
         try:
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
             discover_plugins()
             for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
                 frontmatter = plugin_skill.pop("frontmatter", {})
-                if not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"]):
+                if (not skill_matches_platform(frontmatter) or not skill_model_invocable(frontmatter)
+                        or _is_skill_disabled(plugin_skill["name"])):
                     continue
                 all_skills.append(plugin_skill)
         except Exception:
@@ -317,7 +324,7 @@ def skills_list(category: str | None = None, task_id: str | None = None) -> str:
         return tool_error(str(e), success=False)
 
 
-def _resolve_plugin_skill(name, file_path, task_id, preprocess):
+def _resolve_plugin_skill(name, file_path, task_id, preprocess, for_model: bool = False):
     """``plugin:skill`` dispatch: ``(result_json, None)`` when answered, else ``(None,
     local_category_name)`` to fall through to the flat-tree scan — categorized local skills also use
     ``category:skill`` in config/gateway prompts, so the on-disk ``category/skill`` form returns."""
@@ -352,7 +359,8 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
             f"has been cleaned up — try again after the plugin is reloaded."), None
     if plugin_skill_md is not None:
         return _serve_plugin_skill(
-            plugin_skill_md, namespace, bare, file_path=file_path, preprocess=preprocess, session_id=task_id), None
+            plugin_skill_md, namespace, bare, file_path=file_path, preprocess=preprocess,
+            session_id=task_id, for_model=for_model), None
     if available := pm.list_plugin_skills(namespace):  # plugin exists but this specific skill is missing
         return _fail(
             f"Skill '{bare}' not found in plugin '{namespace}'.",
@@ -589,12 +597,47 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
         logger.warning("Skill security warning for '%s': %s", name, "; ".join(warnings))
 
 
+def _ensure_skill_deps(frontmatter: dict) -> str | None:
+    """Ensure ``deps: [pkg, ...]`` pm packages at load; returns the failure note or None.
+
+    Loading the skill IS the activation moment: ensure each declared pm package now so the
+    skill's commands work when the model runs them. Failure never blocks the skill content —
+    the note carries the remedy.
+    """
+    declared_deps = frontmatter.get("deps") or []
+    if isinstance(declared_deps, str):
+        declared_deps = [declared_deps]
+    if not isinstance(declared_deps, list) or not declared_deps:
+        return None
+    failed_deps = []
+    for dep in [str(d).strip() for d in declared_deps if str(d).strip()]:
+        try:
+            import pm
+
+            pm.ensure(dep)
+        except Exception as exc:
+            logger.debug("pm.ensure(%s) failed while activating skill deps", dep, exc_info=True)
+            failed_deps.append(f"{dep}: {exc}")
+    if not failed_deps:
+        return None
+    return (
+        "Tool dependencies could not be installed — "
+        + "; ".join(failed_deps)
+        + ". Run `hermes pm install "
+        + " ".join(str(d) for d in declared_deps)
+        + "` and reload."
+    )
+
+
 def skill_view(
-    name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
+    name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True,
+    for_model: bool = False) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
-    slash/preload callers render the message themselves."""
+    slash/preload callers render the message themselves. ``for_model=True`` marks a
+    model-initiated load: a skill whose SKILL.md sets ``model_invocable: false`` is refused
+    (user-initiated loads — slash invocation, ``--skills`` preload, auto-load — pass the default)."""
     try:
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.
@@ -602,7 +645,7 @@ def skill_view(
             return _fail(lookup_error, hint=_LOOKUP_HINT)
         local_category_name: str | None = None
         if ":" in name:  # plugin registry; bare names use the flat-tree scan below
-            served, local_category_name = _resolve_plugin_skill(name, file_path, task_id, preprocess)
+            served, local_category_name = _resolve_plugin_skill(name, file_path, task_id, preprocess, for_model=for_model)
             if served is not None:
                 return served
         # The fall-through form (namespace/bare) joins onto each search dir too; re-validate it
@@ -623,6 +666,10 @@ def skill_view(
         if not skill_matches_platform(frontmatter):
             return _fail(f"Skill '{name}' is not supported on this platform.", readiness_status=SkillReadinessStatus.UNSUPPORTED.value)
         resolved_name = frontmatter.get("name", skill_md.parent.name)
+        if for_model and not skill_model_invocable(frontmatter):
+            return _fail(
+                f"Skill '{resolved_name}' is user-only (`model_invocable: false` in its SKILL.md) — "
+                "the model cannot load it; the user can invoke it directly (e.g. its slash command).")
         # Disabled by declared name, or by the exact path that IS this copy's load name (a same-tier
         # duplicate's row) — whatever alias reached it; an unrelated copy at that path elsewhere is not.
         rel = _owned_relative(skill_dir, skill_md, all_dirs)
@@ -647,39 +694,17 @@ def skill_view(
         readiness, readiness_extras = _skill_readiness(frontmatter, skill_name)
         rendered_content = content if not preprocess else _preprocess_skill(
             content, skill_dir, task_id, "Could not preprocess skill content for %s", skill_name)
-        # ── pm tool deps (`deps: [ffmpeg]` frontmatter) ──────────────
-        # Loading the skill IS the activation moment: ensure each declared
-        # pm package now so the skill's commands work when the model runs
-        # them. Failure never blocks the skill content — the note carries
-        # the remedy.
-        deps_note = None
-        declared_deps = frontmatter.get("deps") or []
-        if isinstance(declared_deps, str):
-            declared_deps = [declared_deps]
-        if isinstance(declared_deps, list) and declared_deps:
-            failed_deps = []
-            for dep in [str(d).strip() for d in declared_deps if str(d).strip()]:
-                try:
-                    import pm
-
-                    pm.ensure(dep)
-                except Exception as exc:
-                    failed_deps.append(f"{dep}: {exc}")
-            if failed_deps:
-                deps_note = (
-                    "Tool dependencies could not be installed — "
-                    + "; ".join(failed_deps)
-                    + ". Run `hermes pm install "
-                    + " ".join(str(d) for d in declared_deps)
-                    + "` and reload."
-                )
+        deps_note = _ensure_skill_deps(frontmatter)
 
         result = {
             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
             "tags": tags, "related_skills": related_skills, "content": rendered_content,
             "path": rel_path, "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
-            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
+            "usage_hint": (
+                "To view linked files, call skill_view(name, file_path) where file_path is e.g. "
+                f"'references/api.md' or 'assets/config.yaml'. {SKILL_DIR_NOTE}"
+            ) if linked_files else None,
             **readiness,
             **readiness_extras}
         if deps_note:
@@ -745,7 +770,7 @@ def _skill_view_with_bump(args, **kw):
     # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
     # out of the parent's bucket.
     dedup_task_id = None if is_background_review() else task_id
-    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
+    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id, for_model=True)
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):

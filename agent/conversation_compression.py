@@ -28,6 +28,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
+from agent.conversation_compression_steer import (
+    _compressed_has_busy_steer,
+    _extract_steer_text_from_message,
+    _message_text,
+)
+
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
@@ -178,10 +184,10 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_previous_summary", "_summary_has_user_turn", "compression_count", "_last_compression_savings_pct",
     "_ineffective_compression_count", "_anti_thrash_recovery_deadline", "_fallback_compression_streak",
     "_verify_compaction_cleared_threshold", "_last_compression_made_progress", "_summary_failure_cooldown_until",
-    "_cooldown_persist_failed", "_last_summary_error", "_consecutive_timeout_failures", "_consecutive_truncation_failures",
+    "_cooldown_persist_failed", "_last_summary_error", "_consecutive_timeout_failures", "_consecutive_truncation_failures", "_consecutive_degenerate_failures",
     "_last_summary_dropped_count",
     "_last_summary_fallback_used", "_last_compress_aborted", "_last_summary_auth_failure",
-    "_last_summary_network_failure", "_last_summary_empty_content_failure", "_last_summary_truncated_failure",
+    "_last_summary_network_failure", "_last_summary_empty_content_failure", "_last_summary_truncated_failure", "_last_summary_degenerate_failure",
     "_last_summary_overload_failure", "_consecutive_overload_aborts", "_last_summary_overload_degraded",
     "_last_aux_model_failure_error", "_last_aux_model_failure_model", "_last_aux_resolved_model",
     "_summary_model_fallen_back", "summary_model",
@@ -2155,17 +2161,6 @@ _SYNTHETIC_USER_PREFIXES = (
 )
 
 
-def _message_text(message: Any) -> str:
-    content = message.get("content") if isinstance(message, dict) else None
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            str(part.get("text") or part.get("content") or "") for part in content if isinstance(part, dict)
-        )
-    return ""
-
-
 _SYNTHETIC_USER_FLAGS = (
     "_todo_snapshot_synthetic", "_empty_recovery_synthetic", "_verification_stop_synthetic", "_pre_verify_synthetic",
     "_dropped_toolcall_nudge",
@@ -2185,62 +2180,6 @@ def _is_real_user_message(message: Any) -> bool:
         return False
     from agent.context_compressor import ContextCompressor
     return not ContextCompressor._is_synthetic_compression_user_turn(message)
-
-
-_STEER_FALLBACK_OPEN = "[OUT-OF-BAND USER MESSAGE"
-_STEER_FALLBACK_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
-
-
-def _steer_markers() -> tuple[str, str]:
-    """``(open, close)`` steer markers from prompt_builder, or the stable fallback literals."""
-    try:
-        from agent.prompt_builder import STEER_MARKER_CLOSE, STEER_MARKER_OPEN
-        return STEER_MARKER_OPEN, STEER_MARKER_CLOSE
-    except Exception:
-        return _STEER_FALLBACK_OPEN, _STEER_FALLBACK_CLOSE
-
-
-def _message_contains_busy_steer(message: Any) -> bool:
-    """Return whether *message* carries a busy-steer marker.
-    Steer follow-ups are now their own ``role=user`` rows (caught by ``_is_real_user_message``); in
-    transcripts persisted before that they ride inside ``role=tool`` results, so those still count."""
-    text = _message_text(message)
-    if not text:
-        return False
-    open_marker, close_marker = _steer_markers()
-    return open_marker in text and close_marker in text
-
-
-def _extract_steer_text_from_message(message: Any) -> Optional[str]:
-    """Extract the inner user text from a steer marker, or None."""
-    text = _message_text(message)
-    if not text:
-        return None
-    open_marker, close_marker = _steer_markers()
-    start = text.find(open_marker)
-    if start == -1:
-        # Fallback: marker wording may evolve; look for the stable prefix, then skip to the end of the opening line.
-        start = text.find(_STEER_FALLBACK_OPEN)
-        if start == -1:
-            return None
-        nl = text.find("\n", start)
-        start = nl + 1 if nl != -1 else start + len(_STEER_FALLBACK_OPEN)
-    else:
-        start += len(open_marker)
-    end = text.find(close_marker, start)
-    if end == -1:
-        end = text.find(_STEER_FALLBACK_CLOSE, start)
-        if end == -1:
-            return None
-    return text[start:end].strip() or None
-
-
-def _compressed_has_busy_steer(messages: list) -> bool:
-    """Whether *messages* already carries a steer marker in a ``role=tool`` row.
-    Only tool rows count, so a summary merely quoting the marker text is not mistaken for live intent."""
-    return any(
-        isinstance(msg, dict) and msg.get("role") == "tool" and _message_contains_busy_steer(msg) for msg in messages
-    )
 
 
 def _strip_stale_todo_snapshot(content: Any) -> Any:
