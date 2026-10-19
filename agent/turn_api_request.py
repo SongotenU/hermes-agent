@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
+from agent.request_epoch import log_request_epoch
 from hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
 from utils import env_var_enabled
 
@@ -179,6 +180,11 @@ def build_api_request(
                 "prepared prompt without the MoA handshake",
                 type(agent.client).__name__,
             )
+    # Cache-debug observability: log this request's envelope epoch (change vs series vs
+    # warm) once the payload is final. Log-only; never raises.
+    log_request_epoch(
+        agent, system_message=system_message, tools_for_api=tools_for_api, api_messages=api_messages,
+    )
     return ApiRequestBuild(
         "fallthrough", api_messages, _moa_prepared_request, tools_for_api, api_kwargs,
         _original_api_kwargs, _llm_middleware_trace,

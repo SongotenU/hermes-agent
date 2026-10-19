@@ -894,6 +894,22 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         return bundle, failed, False
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
+    # Administrator revocations (tools.skills_revocations): hard block BEFORE the
+    # scan cost — an admin refusal outranks scan verdicts and takes no --force.
+    from tools.skills_revocations import block_for_bundle
+    revoked = block_for_bundle(bundle.name, (bundle.metadata or {}).get("version"),
+                               q_path, source=bundle.source)
+    if revoked is not None:
+        c.print(f"[bold red]Revoked:[/] '{identifier}' matches an entry in the skill "
+                f"revocations list. Never installed.")
+        why = f": {revoked.get('reason')}" if revoked.get("reason") else "."
+        _install_blocked(c, bundle,
+                         "the skill identifier/digest matches the administrator revocation list"
+                         f"{why} This is a hard block: --force does not override it.",
+                         "revoked", "revocation_list", q_path=q_path, lead="\n", label="Not installed:")
+        attempt["failure_class"] = "revoked"
+        return bundle, failed, False
+
     result = _scan_quarantined(c, q_path, bundle, meta, identifier)
     allowed, _reason = should_allow_install(result, force=force)
     if not allowed:
@@ -1539,6 +1555,36 @@ def _tap_cli(args) -> None:
 
 # `hermes skills <action>` -> handler(args). Lambdas late-bind the do_* names so
 # tests that patch("hermes_cli.skills_hub.do_install") still intercept.
+def _revocations_cli(_args) -> Optional[int]:
+    """``hermes skills revocations`` — show the resolved list and live-verify installed skills."""
+    from tools.skills_revocations import (describe_entry, load_revocations,
+                                          revocations_path, verify_installed)
+    from tools.skills_hub import HubLockFile
+    resolved = revocations_path()
+    c = _console
+    c.print(f"[bold]Revocations file:[/] {resolved}"
+            f"{' (missing — the list is empty)' if resolved is None or not resolved.is_file() else ''}")
+    entries = load_revocations()
+    c.print(f"[bold]Entries:[/] {len(entries)}")
+    for entry in entries:
+        c.print(f"  - {describe_entry(entry) if isinstance(entry, dict) else repr(entry)}")
+    if not entries:
+        c.print(f"[dim]To revoke a skill, add an entry to {resolved}; the custodian copy lives in"
+                f" the super-patches repo (revocations.json). See tools/skills_revocations.py.[/]")
+        return None
+    installed = HubLockFile().list_installed()
+    rows = verify_installed(entries, installed)
+    bad = [row for row in rows if row["revoked"]]
+    for row in rows:
+        mark = "[bold red]REVOKED[/]" if row["revoked"] else "[green]clean[/]"
+        c.print(f"  {mark} {row['name']}" + (f" — {row['reason']}" if row.get("reason") else ""))
+    if bad:
+        c.print(f"[bold red]{len(bad)} installed skill(s) are revoked — remove them:[/]\n"
+                "  hermes skills uninstall <name>")
+        return 1
+    return None
+
+
 _CLI_ACTIONS = {
     "browse": lambda a: do_browse(page=a.page, page_size=a.size, source=a.source),
     "search": lambda a: do_search(a.query, source=a.source, limit=a.limit,
@@ -1564,6 +1610,7 @@ _CLI_ACTIONS = {
                                                     skip_confirm=getattr(a, "yes", False)),
     "publish": lambda a: do_publish(a.skill_path, target=getattr(a, "to", "github"),
                                     repo=getattr(a, "repo", "")),
+    "revocations": _revocations_cli,
     "snapshot": _snapshot_cli, "tap": _tap_cli}
 
 
@@ -1571,7 +1618,7 @@ def skills_command(args) -> Optional[int]:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
     handler = _CLI_ACTIONS.get(getattr(args, "skills_action", None))
     if handler is None:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|revocations|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
         return None
     # A handler reporting a real failure (install/update/uninstall's False) must exit non-zero: the
