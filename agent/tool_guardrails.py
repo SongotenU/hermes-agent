@@ -91,6 +91,13 @@ def is_stall_guard_repeatable(tool_name: str) -> bool:
     return tool_name in STALL_GUARD_REPEATABLE_TOOLS or tool_name.endswith(_STALL_GUARD_REPEATABLE_SUFFIXES)
 
 
+# Pure bookkeeping tools (task-list upkeep): transparent to the identical-call and
+# cycle chains — an interleaved todo update must neither reset nor join the streak a
+# read loop is building (DSH guard invariant: untracked bookkeeping tools stay
+# transparent to the chain). Their own repeats are not tracked either.
+TRANSPARENT_BOOKKEEPING_TOOLS = frozenset({"todo_list"})
+
+
 def _is_non_interactive_platform(platform: str | None) -> bool:
     """True for gateway/cron sessions where tool loops are unattended."""
     if not isinstance(platform, str) or not platform.strip():
@@ -450,7 +457,11 @@ class ToolCallGuardrailController:
         (observational, pollers exempt). ``stub`` replaces the CURRENT result from the 2nd byte-identical
         repeat — the tool still executed, only the context representation is deduplicated, so polling
         semantics survive; pollers are NOT exempt here since an unchanged poll is where it saves most.
+        Bookkeeping tools (``TRANSPARENT_BOOKKEEPING_TOOLS``) are transparent: they neither join nor
+        reset a streak, so an interleaved todo update can't mask a read loop.
         """
+        if tool_name in TRANSPARENT_BOOKKEEPING_TOOLS:
+            return IdenticalCallObservation(notice=None, stub=None, kind=None)
         is_plain_str = isinstance(result, str)
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
         result_hash = _result_hash(result, tool_name) if is_plain_str else ""

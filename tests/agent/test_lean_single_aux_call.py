@@ -74,6 +74,8 @@ SUMMARY_BODY = (
     "## Goal\nFix the bug.\n\n"
     "## Completed Actions\n1. EDIT agent/foo.py — done [tool: patch]\n\n"
     f"{_LEAN_SESSION_LOG_HEADING}\n- Edited agent/foo.py; PR #12345; ran pytest.\n"
+    # Grow past the degenerate-summary gate's size-scaled floor; assertions search substrings.
+    + "Additional context retained for the summary fixture. " * 16
 )
 
 
