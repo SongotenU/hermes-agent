@@ -1,8 +1,8 @@
 """Outer-loop exception handler for the conversation turn loop: phase-aware classification
 (interpreter shutdown, deterministic local post-processing bug vs API-path failure),
-unanswered tool_call error results, and the per-turn error cap that stops the loop from
-spinning until the budget is gone. Nothing here imports ``agent.conversation_loop`` at
-module level (cycle); loop-internal constants resolve lazily.
+outcome-aware synthetic results for unanswered tool_calls, and the per-turn error cap that
+stops the loop from spinning until the budget is gone. Nothing here imports
+``agent.conversation_loop`` at module level (cycle); loop-internal constants resolve lazily.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import sys
 from typing import Any
 
 from agent.message_metadata import append_message
+from agent.tool_result_classification import tool_may_have_side_effect
 from agent.turn_failure_copy import short_detail, site_copy
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -30,6 +31,29 @@ class OuterErrorVerdict:
     _turn_exit_reason: Any
     failed: Any
     final_response: Any
+
+
+def _unanswered_tool_result(tool_name: str, error_msg: str) -> tuple[str, str]:
+    """``(content, effect_disposition)`` for a synthetic result on a tool call whose result
+    was never recorded (the outer loop died before it returned).
+
+    The model must not read the call as a plain failure: it may have executed. Side-effecting
+    calls carry unknown-outcome semantics with explicit retry guidance; read-only calls state
+    the no-effect fact so retrying them is free. Same per-call discrimination as the resume
+    path's orphan recovery in ``agent/replay_cleanup.py``.
+    """
+    if tool_may_have_side_effect(tool_name):
+        return (
+            "The turn hit an error before this tool call's result was recorded "
+            f"({error_msg}). The call may have executed; its outcome is unknown. "
+            "Verify external state before retrying; retry only if the operation is "
+            "read-only or idempotent. Do not retry blindly."
+        ), "unknown"
+    return (
+        "The turn hit an error before this tool call's result was recorded "
+        f"({error_msg}). This tool is read-only, so no lasting change occurred; "
+        "retry it if it is still needed."
+    ), "none"
 
 
 def handle_outer_loop_error(
@@ -118,7 +142,8 @@ def handle_outer_loop_error(
     logger.exception("Outer loop error in API call #%d", api_call_count)
 
     # An appended assistant tool_calls message needs a role="tool" result per
-    # tool_call_id; fill in error results for unanswered ones.
+    # tool_call_id; fill in outcome-aware results for unanswered ones (the call may
+    # have executed — say so, and say what retry is safe).
     for idx in range(len(messages) - 1, -1, -1):
         msg = messages[idx]
         if not isinstance(msg, dict):
@@ -133,11 +158,14 @@ def handle_outer_loop_error(
             }
             for tc in msg["tool_calls"]:
                 if tc and isinstance(tc, dict) and tc["id"] not in answered_ids:
+                    tool_name = _ra().AIAgent._get_tool_call_name_static(tc)
+                    content, effect_disposition = _unanswered_tool_result(tool_name, error_msg)
                     append_message(messages, {
                         "role": "tool",
-                        "name": _ra().AIAgent._get_tool_call_name_static(tc),
+                        "name": tool_name,
                         "tool_call_id": tc["id"],
-                        "content": f"Error executing tool: {error_msg}",
+                        "content": content,
+                        "effect_disposition": effect_disposition,
                     })
         break
 
