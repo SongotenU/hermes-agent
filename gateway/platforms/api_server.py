@@ -2877,11 +2877,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         category), the same set ``/skills list`` shows."""
         try:
             from tools.skills_tool import find_all_skills, sort_skills
-            skills = sort_skills(
-                find_all_skills(
-                    skip_disabled=False, include_editorial=True
-                )
-            )
+            # Upstream's Collective Wisdom revert (0dcadf6f41) removed the
+            # include_editorial kwarg from find_all_skills but missed this call
+            # site; passing it raises TypeError -> 500. Revert the call too.
+            skills = sort_skills(find_all_skills(skip_disabled=False))
         except Exception:
             logger.exception("GET /v1/skills failed")
             return _error_response("Failed to enumerate skills", 500, err_type="server_error")

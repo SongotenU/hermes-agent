@@ -167,3 +167,34 @@ def test_mirror_slash_side_effects_reports_lock_skip():
     assert "live session sync failed" not in output
 
 
+# ── Failed compression: taxonomy line, not a silent no-op ──────────────
+
+
+def test_compress_session_history_raises_compression_failed_with_taxonomy_line():
+    """A failed manual compression must surface the taxonomy sentence (and leave the
+    history untouched), never the "No changes from compression" no-op text."""
+    from tui_gateway.server import CompressionFailed, _compress_session_history
+
+    agent = MagicMock()
+    agent._cached_system_prompt = ""
+    agent.tools = None
+    agent.session_id = "sess-fail"
+    agent._pending_context_engine_compression_notification = None
+    agent._compression_skipped_due_to_lock = None
+    agent._compress_context.side_effect = RuntimeError("database is locked")
+
+    history = _make_history()
+    session = _make_session(agent, history)
+
+    with (
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+        pytest.raises(CompressionFailed) as exc_info,
+    ):
+        _compress_session_history(session)
+
+    assert exc_info.value.kind == "persistence"
+    assert "unchanged" in str(exc_info.value)
+    assert session["history"] == history
+    assert session["history_version"] == 1
+
+
