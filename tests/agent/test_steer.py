@@ -770,6 +770,22 @@ class TestSteerMarkerContract:
         assert STEER_MARKER_OPEN in emitted and STEER_MARKER_CLOSE in emitted
         assert STEER_MARKER_OPEN in STEER_CHANNEL_NOTE and STEER_MARKER_CLOSE in STEER_CHANNEL_NOTE
 
+    def test_midturn_priority_trailer_orders_the_reply_before_resumed_work(self):
+        """A delivered steer must order the model: answer the user first, then
+        finish unfinished tasks from previous turns (ported from xai-org/grok-build's
+        interjection framing, UNFINISHED_TASKS_REMINDER). Without it a mid-turn
+        steer can be silently skipped while the model finishes the old task."""
+        from agent.prompt_builder import STEER_MARKER_CLOSE, STEER_PRIORITY_NOTE
+
+        emitted = format_steer_marker("stop and fix the test first")
+        assert STEER_PRIORITY_NOTE in emitted
+        # Inside the trusted envelope: after the steer text, before the close marker.
+        assert (
+            emitted.index("stop and fix the test first")
+            < emitted.index(STEER_PRIORITY_NOTE)
+            < emitted.index(STEER_MARKER_CLOSE)
+        )
+
 
 
 
