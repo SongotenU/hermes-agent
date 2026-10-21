@@ -17,6 +17,7 @@ import importlib
 import logging
 import os
 import threading
+import uuid
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
@@ -793,6 +794,52 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     }, True
 
 
+class _ApprovalAudit:
+    """Durable asked/decided pair for one human approval gate (state.db ``approval_events``).
+
+    One fresh ``request_id`` pairs the events; turn/tool-call/session ids come from the
+    approval observability context at write time. Best-effort — a failed append never
+    blocks or alters the decision (audit is observability; the gate is safety-critical).
+    Pending-queue asks (deferred /approve review) are not audited: their decision arrives
+    on a later turn with no frame here to pair with. See ``hermes_state_approvals``.
+    """
+
+    def __init__(self, *, description: str, pattern_key: str) -> None:
+        self.request_id = uuid.uuid4().hex
+        self.description = description
+        self.pattern_key = pattern_key
+        self._asked = False
+        self._decided = False
+
+    def asked(self, surface: str) -> None:
+        """Record the ask once, at the point a human-facing prompt is about to happen."""
+        if self._asked:
+            return
+        self._asked = True
+        self._write(event="asked", surface=surface)
+
+    def decided(self, outcome: str, choice: str = "") -> None:
+        """Record the decision once (grants and denials both flow through here)."""
+        if self._decided:
+            return
+        self._decided = True
+        self._write(event="decided", outcome=outcome, choice=choice)
+
+    def _write(self, *, event: str, surface: str = "", outcome: str = "", choice: str = "") -> None:
+        try:
+            from hermes_state_approvals import record_approval_event
+
+            obs = approval_context.get_observability_context()
+            record_approval_event(
+                session_id=obs["session_id"], request_id=self.request_id, event=event,
+                outcome=outcome or None, choice=choice or None, surface=surface,
+                pattern_key=self.pattern_key, turn_id=obs["turn_id"],
+                tool_call_id=obs["tool_call_id"], detail=self.description,
+            )
+        except Exception:
+            logger.debug("Approval audit write failed (event=%s)", event, exc_info=True)
+
+
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
@@ -813,6 +860,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             return result
     pending_body = pending_body() if pending_body else None
     allow_permanent = not smart_denied
+    audit = _ApprovalAudit(description=description, pattern_key=pattern_key)
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -820,14 +868,17 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             breaker = _denial_breaker_addendum(session_key)
         deny_reason = fmt.pop("deny_reason", None)
         extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
-        return _denied(template.format(description=description, breaker=breaker, **fmt),
-                       pattern_key=pattern_key, description=description,
-                       outcome=outcome, noun=spec.noun, **extra)
+        result = _denied(template.format(description=description, breaker=breaker, **fmt),
+                         pattern_key=pattern_key, description=description,
+                         outcome=outcome, noun=spec.noun, **extra)
+        audit.decided(outcome)
+        return result
 
     def grant(choice: str) -> dict:
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, pattern_keys)
+        audit.decided("approved", choice)
         if spec.user_approved:
             return _user_approved(session_key, description)
         return _approved()
@@ -840,8 +891,11 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
         if denied is not None:
+            audit.asked("transport")
+            audit.decided(str(denied.get("outcome") or "denied"))
             return denied
         if choice is not None:
+            audit.asked("transport")
             if choice == "deny":
                 _record_denial(session_key)
                 return deny(spec.transport_denied, "denied")
@@ -866,8 +920,10 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             }
             if smart_denied:
                 data["smart_denied"] = True
+            audit.asked("gateway" if is_gateway else "ask")
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
             if decision.get("notify_failed"):
+                audit.decided("notify_failed")
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
                                description=description, outcome="notify_failed", noun=spec.noun)
             # Consent contract: silence is NOT consent, and an explicit deny is a hard
@@ -898,6 +954,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         ):
             if not spec.pending_keys:
                 display_command, display_description = command, description
+            # Not audited: the pending queue defers the ask to a later /approve turn with no
+            # decision frame here to pair with (see _ApprovalAudit).
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
                 pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
@@ -910,6 +968,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         prompt_description = redact_sensitive_text(description)
     hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
+    audit.asked("cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
                                        smart_denied=smart_denied, approval_callback=approval_callback)
