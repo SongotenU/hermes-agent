@@ -514,6 +514,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     compression_recovery_deadline REAL,
     compression_overload_streak INTEGER NOT NULL DEFAULT 0,
+    compression_summary_meta TEXT,
     profile_name TEXT,
     transport_profile TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,

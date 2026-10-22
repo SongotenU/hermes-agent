@@ -2945,7 +2945,9 @@ def _run_summary_dispatch(
 
 
 def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
-    """Strip stale todo snapshots from ``compressed`` and fold the live one in (in place)."""
+    """Strip stale todo snapshots from ``compressed`` and fold the live one in; also refreshes the live-work reminder (in place)."""
+    from agent.post_compact_state import fold_active_state_reminder
+    fold_active_state_reminder(agent, compressed)
     todo_snapshot = agent._todo_store.format_for_injection()
     # Non-empty store (even all done) is authoritative: drop the old snapshot. A
     # truly empty store may be un-rehydrated post-compaction: keep the snapshot.
@@ -4114,10 +4116,8 @@ def compress_context(
                 )
                 return messages, _existing_sp
         _warn_summary_or_aux_fallback(agent)
-        # A just-delivered reply the engine folded away must stay live or the
-        # next render drops it from the surface (#118900). It runs FIRST: the
-        # todo fold rewrites the trailing user row, and both later passes place themselves around the tail, so the
-        # reply has to be back in its chronological slot before they look.
+        # A just-delivered reply the engine folded away must stay live (#118900); it runs
+        # FIRST — later folds rewrite the tail, so reinsert before they look.
         from agent.conversation_compression_reply_anchor import _ensure_compressed_keeps_last_assistant_reply
 
         # `/compress here N` hands only the HEAD in as `messages` and carries the kept tail

@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
 from agent.memory_context import build_memory_context_block
+from agent.magic_keywords import apply_magic_keywords
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
 from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
@@ -468,6 +469,7 @@ def _should_run_preflight_estimate(
 def _should_idle_compact(
     *, enabled: bool, idle_after_seconds: int, idle_gap_seconds: float, tokens: int,
     floor_tokens: int, cooldown_active: bool, last_compaction_tokens: int = 0,
+    prompt_cache_persistent: bool = False,
 ) -> bool:
     """Pure predicate: idle compaction fires after a wall-clock gap of
     ``idle_after_seconds`` (opt-in, <= 0 disables), independent of ``threshold_tokens``;
@@ -487,6 +489,11 @@ def _should_idle_compact(
     prompt on a slow route, reclaiming nothing (#97239).
     """
     if not enabled or idle_after_seconds <= 0 or idle_gap_seconds < idle_after_seconds or cooldown_active:
+        return False
+    # A route whose prompt cache never expires has the cost/benefit inverted: an idle
+    # compaction reclaims tokens but throws away the whole warm prefix cache (parity with
+    # oh-my-pi's promptCachePersistent gate on logged-in Codex accounts).
+    if prompt_cache_persistent:
         return False
     effective_floor = floor_tokens
     if last_compaction_tokens > 0:
@@ -1089,8 +1096,10 @@ def build_turn_context(
 
     if isinstance(user_message, str):
         user_message = sanitize_surrogates(user_message)
+        user_message = apply_magic_keywords(user_message)
     if isinstance(persist_user_message, str):
         persist_user_message = sanitize_surrogates(persist_user_message)
+        persist_user_message = apply_magic_keywords(persist_user_message)
 
     effective_task_id, turn_id = _bind_turn_identity(
         agent, task_id, stream_callback, persist_user_message,
