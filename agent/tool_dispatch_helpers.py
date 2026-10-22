@@ -241,19 +241,23 @@ def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, lis
         return (name, scoped, name in _PATH_SCOPED_WRITERS) if scoped else None
     # Registry-first (R6.2): explicit is_concurrency_safe metadata wins over the
     # legacy frozensets; _is_tool_parallel_safe falls back to them when the
-    # registry has no opinion for this name.
-    if _is_tool_parallel_safe(name):
+    # registry has no opinion for this name. Passing `args` lets a HermesTool's
+    # per-input predicate admit a call whose worst case is unsafe (B13).
+    if _is_tool_parallel_safe(name, args):
         return name, [], False
     return None
 
 
-def _is_tool_parallel_safe(tool_name: str) -> bool:
+def _is_tool_parallel_safe(tool_name: str, args: Optional[dict] = None) -> bool:
     """Registry-first parallel safety check (Phase 3 R6.2).
 
     Explicit registry metadata (is_concurrency_safe) wins over the legacy
     hardcoded frozenset. A tool with is_concurrency_safe=False is never
-    parallel even if in the legacy frozenset (R6.4). Bridge lookups are
-    stateless catalog reads and always parallel-safe.
+    parallel even if in the legacy frozenset (R6.4). When the call arguments are
+    at hand, a HermesTool's per-input predicate may additionally ADMIT the call
+    (a read-mode search is safe even when the tool's worst case is a write);
+    a predicate answering False never overrides registry metadata. Bridge
+    lookups are stateless catalog reads and always parallel-safe.
     """
     try:
         from tools.registry import registry as _registry
@@ -262,6 +266,14 @@ def _is_tool_parallel_safe(tool_name: str) -> bool:
             return safety["is_concurrency_safe"]
     except Exception:
         pass
+    if args is not None:
+        try:
+            from tools.concurrency import classify_tool
+            if classify_tool(tool_name, args)[1]:
+                return True
+        except Exception:
+            # A per-input predicate must never break dispatch admission.
+            logging.debug("per-input parallel admission failed for %s", tool_name, exc_info=True)
     return (
         tool_name in _PARALLEL_SAFE_BRIDGE_LOOKUPS
         or tool_name in _PARALLEL_SAFE_TOOLS

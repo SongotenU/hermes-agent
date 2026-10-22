@@ -56,6 +56,17 @@ class HermesTool:
     should_defer: bool = False  # Lazy-load schema (save context tokens)
     search_hint: str = ""  # Keywords for tool_search when deferred
 
+    # ── Per-input safety (Claude Code Tool.ts parity) ────────────────────
+    # Static flags above describe the WORST case; a tool whose safety depends on
+    # its arguments (search vs delete, read vs write) may instead answer per
+    # input. None = no per-input opinion (static flags win). Exceptions fall
+    # back to the static answer, so a broken predicate can never destabilize
+    # tool dispatch. interrupt_behavior is intentionally absent: Hermes cancels
+    # every not-yet-started call on interrupt and sync calls run to completion,
+    # which is already the CC "block"-in-flight + "cancel"-pending superset.
+    is_read_only_for: Optional[Callable[[dict], bool]] = None
+    is_concurrency_safe_for: Optional[Callable[[dict], bool]] = None
+
     # ── Permission (Claude Code: Tool.ts 484-516) ────────────────────────
     @staticmethod
     def check_permissions(args: dict[str, Any]) -> Optional[str]:

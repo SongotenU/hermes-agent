@@ -609,6 +609,12 @@ class ToolRegistry:
     def get_all_entries(self) -> list[ToolEntry]:
         return self._snapshot_entries()
 
+    def get_builtin_entries(self) -> list[ToolEntry]:
+        """Default-scope (built-in) entries only — excludes plugin-scoped tools, so
+        environment-independent consumers (docs generators, catalogs) render the same
+        core surface on every home."""
+        return list(self._slot(None).values())
+
     def get_tool_names_for_toolset(self, toolset: str) -> list[str]:
         return sorted(e.name for e in self._grouped(self._snapshot_entries()).get(toolset, []))
 

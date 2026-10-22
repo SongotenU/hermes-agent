@@ -49,8 +49,25 @@ _MUTATING_DEFAULTS: set[str] = {
 }
 
 
-def classify_tool(tool_name: str) -> tuple[bool, bool]:
+def _per_input_flag(tool, attr: str, args: Optional[dict]) -> Optional[bool]:
+    """Resolve a per-input predicate; None when absent/not applicable/raising."""
+    fn = getattr(tool, attr, None)
+    if not callable(fn) or args is None:
+        return None
+    try:
+        return bool(fn(args))
+    except Exception:
+        logger.debug("per-input flag %s raised for %s", attr, getattr(tool, "name", "?"), exc_info=True)
+        return None
+
+
+def classify_tool(tool_name: str, args: Optional[dict] = None) -> tuple[bool, bool]:
     """Classify a tool as (is_read_only, is_concurrency_safe).
+
+    Args:
+        tool_name: registered tool name.
+        args: when given, per-input predicates (``is_read_only_for`` /
+            ``is_concurrency_safe_for``) override the static flags.
 
     Returns:
         (is_read_only, is_concurrency_safe) tuple.
@@ -65,7 +82,11 @@ def classify_tool(tool_name: str) -> tuple[bool, bool]:
         from tools.tool_base import get_tool_instance
         tool = get_tool_instance(tool_name)
         if tool is not None:
-            return (tool.is_read_only, tool.is_concurrency_safe)
+            per_input_read = _per_input_flag(tool, "is_read_only_for", args)
+            per_input_conc = _per_input_flag(tool, "is_concurrency_safe_for", args)
+            is_read = per_input_read if per_input_read is not None else tool.is_read_only
+            conc = per_input_conc if per_input_conc is not None else tool.is_concurrency_safe
+            return (is_read, conc)
     except Exception:
         pass
 
