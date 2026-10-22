@@ -17,9 +17,11 @@ import pytest
 
 from agent.context_compressor import (
     ContextCompressor,
-    _LEAN_ANCHOR_HEADING,
     _LEAN_RECOVERY_HEADING,
     _LEAN_SESSION_LOG_HEADING,
+)
+from agent.context_compressor_anchors import (
+    _LEAN_ANCHOR_HEADING,
 )
 
 

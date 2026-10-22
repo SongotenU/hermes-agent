@@ -2552,6 +2552,9 @@ _RUNTIME_MAIN_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
 _RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_relay_call", default=None)
 )
+from agent.auxiliary_relay_call import (
+    _complete_relay_auxiliary_call, _fail_relay_auxiliary_call, _note_relay_auxiliary_error,
+)
 
 
 @contextlib.contextmanager
@@ -2655,20 +2658,22 @@ def _relay_sync_completion(
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     from agent.auxiliary_hooks import run_with_aux_hooks
+    from agent.sliding_window_breaker import aux_breaker_scope
     model_name = str(kwargs.get("model") or fallback_model)
-    try:
-        return run_with_aux_hooks(
-            lambda: relay_llm.execute_current(
-                kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
-                name=provider_name, model_name=model_name, metadata=relay_chat_metadata(metadata),
-                defer_logical_completion=True,
-            ),
-            aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
-            provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
-        )
-    except Exception as exc:
-        _note_relay_auxiliary_error(exc)
-        raise
+    with aux_breaker_scope(provider_name):
+        try:
+            return run_with_aux_hooks(
+                lambda: relay_llm.execute_current(
+                    kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
+                    name=provider_name, model_name=model_name, metadata=relay_chat_metadata(metadata),
+                    defer_logical_completion=True,
+                ),
+                aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+                provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
+            )
+        except Exception as exc:
+            _note_relay_auxiliary_error(exc)
+            raise
 
 
 async def _relay_async_completion(
@@ -2686,19 +2691,21 @@ async def _relay_async_completion(
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     from agent.auxiliary_hooks import arun_with_aux_hooks
+    from agent.sliding_window_breaker import aux_breaker_scope
     model_name = str(kwargs.get("model") or fallback_model)
-    try:
-        return await arun_with_aux_hooks(
-            lambda: relay_llm.execute_current_async(
-                kwargs, callback, name=provider_name, model_name=model_name,
-                metadata=relay_chat_metadata(metadata), defer_logical_completion=True,
-            ),
-            aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
-            provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
-        )
-    except Exception as exc:
-        _note_relay_auxiliary_error(exc)
-        raise
+    with aux_breaker_scope(provider_name):
+        try:
+            return await arun_with_aux_hooks(
+                lambda: relay_llm.execute_current_async(
+                    kwargs, callback, name=provider_name, model_name=model_name,
+                    metadata=relay_chat_metadata(metadata), defer_logical_completion=True,
+                ),
+                aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+                provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
+            )
+        except Exception as exc:
+            _note_relay_auxiliary_error(exc)
+            raise
 
 
 def _relay_sync_stream(
@@ -6871,44 +6878,6 @@ def _validate_llm_response(
     _complete_relay_auxiliary_call()
     return response
 
-
-def _complete_relay_auxiliary_call(*, outcome: str = "success", error_class: Optional[str] = None) -> None:
-    """Close one auxiliary logical call after acceptance or terminal failure. A success
-    reports the last attempt error it recovered from (``none`` when the first attempt held)."""
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return
-    from agent import relay_llm
-    relay_llm.complete_logical_call(
-        str(context.get("request_id") or ""), outcome=outcome,
-        model_name=str(context.get("model") or "unknown"),
-        provider_name=str(context.get("provider") or "auxiliary"),
-        response_model_name=context.get("response_model"),
-        error_class=error_class or context.get("error_class") or "none",
-    )
-
-
-def _note_relay_auxiliary_error(exc: BaseException) -> None:
-    """Remember one failed attempt's classified reason on the logical call."""
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is not None and isinstance(exc, Exception):
-        from agent import auxiliary_call_outcome
-        context["error_class"] = auxiliary_call_outcome.error_class(
-            exc, provider=str(context.get("provider") or ""), model=str(context.get("model") or ""))
-
-
-def _fail_relay_auxiliary_call(exc: BaseException) -> None:
-    """Close a call that ended in ``exc`` without replacing it: a Hermes abort is ``cancelled``,
-    anything else ``failed`` with the classifier's reason for the error that ended it."""
-    try:
-        from agent import auxiliary_call_outcome
-        if auxiliary_call_outcome.is_cancellation(exc):
-            _complete_relay_auxiliary_call(outcome="cancelled", error_class="none")
-            return
-        _note_relay_auxiliary_error(exc)
-        _complete_relay_auxiliary_call(outcome="failed")
-    except Exception:
-        logger.warning("Relay auxiliary failure finalization failed", exc_info=True)
 
 
 def _unwrap_data_envelope(response: Any, task: str | None = None) -> Any:
