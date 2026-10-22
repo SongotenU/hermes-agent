@@ -17,6 +17,8 @@ from rich.table import Table
 # tools.skills_hub / tools.skills_guard are imported inside functions (cycles + startup cost).
 from hermes_constants import display_hermes_home
 
+logger = logging.getLogger(__name__)
+
 _console = Console()
 
 _VALID_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
@@ -120,15 +122,42 @@ def _clear_skills_cache() -> None:
 
 
 def _finish_change(c: Console, invalidate_cache: bool, what: str = "Change will take effect",
-                   verb: str = "apply", notice: bool = True) -> None:
-    """Apply-now (cache clear) or, when `notice`, tell the user the change lands next session."""
+                   verb: str = "apply", notice: bool = True, detail: str = "") -> None:
+    """Apply-now (cache clear), in-history (capable route, cache kept), or — when
+    `notice` — tell the user the change lands next session."""
     if invalidate_cache:
         _clear_skills_cache()
+        return
+    if _try_in_history(detail or f"{what}: the change is applied and effective now."):
+        c.print("[dim]Applied as an in-history system update (prompt cache kept).[/]\n")
         return
     if not notice:
         return
     c.print(f"[dim]{what} in your next session.[/]")
     c.print(f"[dim]Use /reset to start a new session now, or --now to {verb} immediately (invalidates prompt cache).[/]\n")
+
+
+_agent_provider = None  # set by the CLI at /skills dispatch: () -> live AIAgent | None
+
+
+def set_agent_provider(fn) -> None:
+    """The interactive CLI binds its live agent so skills changes can apply in-history."""
+    global _agent_provider
+    _agent_provider = fn
+
+
+def _try_in_history(detail: str) -> bool:
+    """Queue a system update for the live agent; False keeps the deferral path."""
+    provider = _agent_provider
+    agent = provider() if provider is not None else None
+    if agent is None:
+        return False
+    try:
+        from agent.in_history_system_updates import queue_in_history_update
+        return queue_in_history_update(agent, detail)
+    except Exception:
+        logger.debug("in-history skills update unavailable", exc_info=True)
+        return False
 
 
 def _print_error(c: Console, message: str) -> None:
