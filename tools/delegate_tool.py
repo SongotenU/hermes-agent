@@ -927,6 +927,11 @@ _DESCRIPTION_HEAD = (
     "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
+    "- Synthesize every result yourself: answer from the children's findings directly — never reply "
+    "\"based on your findings\" or hand your own turn to them.\n"
+    "- Spawn only when the child cannot see what you already read; heavy context overlap means continue "
+    "yourself or split by files instead. Name the exact toolsets/paths a child may use in its context, "
+    "and keep scratchpads out of prompts.\n"
     "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
 )
 
