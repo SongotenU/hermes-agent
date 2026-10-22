@@ -5765,6 +5765,14 @@ export interface ToolProgressPayload {
   percent?: number | null
   message?: string | null
 }
+/** ``tool_progress._progress_subcall``: a tool call made INSIDE execute_code (sandbox RPC). */
+export interface ToolSubcallPayload {
+  name: string
+  preview?: string
+  parent?: string
+  duration_s?: number
+  error?: string | null
+}
 /** ``tool_progress._normalize_todo_state`` — full task snapshot. */
 export interface TodoUpdatedPayload {
   todos: unknown[]
@@ -7102,6 +7110,8 @@ export interface BackendGatewayEventMap {
   'tool.progress': ToolProgressPayload
   /** A tool call began (stable id + full args). */
   'tool.start': ToolStartPayload
+  /** Transient progress: a sandbox sub-call of execute_code finished (never durable). */
+  'tool.subcall': ToolSubcallPayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
   'voice.interrupted': Record<string, never>
   /** Live STT text so far while the user is still speaking. */
@@ -7190,6 +7200,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.output_risk',
   'tool.progress',
   'tool.start',
+  'tool.subcall',
   'voice.interrupted',
   'voice.partial',
   'voice.status',
