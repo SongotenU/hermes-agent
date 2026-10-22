@@ -15,9 +15,9 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
 )
 from agent.conversation_compression import (
-    _compressed_has_busy_steer,
     _ensure_compressed_has_user_turn,
 )
+from agent.conversation_compression_steer import _compressed_has_busy_steer
 from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
 import itertools
 

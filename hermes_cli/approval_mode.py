@@ -64,3 +64,39 @@ def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResu
     return ApprovalModeResult(
         True, effective, effective != current, f"Approval mode: {effective} (persistent profile setting).",
     )
+
+
+def run_forget_approvals_command() -> str:
+    """Revoke session grants + the persisted allowlist; render the outcome line.
+
+    Security-relevant side effect lives here (shared by the CLI slash handler) so
+    the mixin stays a thin renderer; the gateway handler keeps its own admin gate.
+    """
+    from tools.approval import forget_all_approval_grants
+
+    result = forget_all_approval_grants()
+    return (
+        f"Forgot {result['session']} session grant(s) and "
+        f"{result['permanent']} persisted pattern(s)."
+    )
+
+
+class CLIApprovalCommandsMixin:
+    """Slash handlers for approval surfaces (/approvals, /forget-approvals).
+
+    Split from ``cli_commands_mixin.py`` (file-size ratchet); both commands mutate
+    profile-wide security policy, so they live next to their shared logic."""
+
+    def _handle_approvals_command(self, cmd_original: str) -> None:
+        """Show or persist the profile-wide dangerous-command approval mode."""
+        from cli_render import _cprint as _cp
+
+        parts = (cmd_original or "").strip().split(None, 1)
+        result = run_approval_mode_command(parts[1] if len(parts) > 1 else None)
+        _cp(f"  {result.message}")
+
+    def _handle_forget_approvals_command(self, cmd_original: str) -> None:
+        """Revoke this session's grants and every persisted 'always' pattern."""
+        from cli_render import _cprint as _cp
+
+        _cp(f"  {run_forget_approvals_command()}")
