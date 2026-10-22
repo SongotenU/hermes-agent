@@ -502,6 +502,38 @@ def save_permanent_allowlist(patterns: set):
         logger.warning("Could not save allowlist: %s", e)
 
 
+# --- Forget standing approvals (oh-my-pi ``/forget-approvals`` parity) ----------------
+
+def forget_all_approval_grants(session_key: str | None = None) -> dict[str, int]:
+    """Revoke BOTH standing-approval tiers for ``session_key`` (default: current).
+
+    Clears this session's grants and every persisted ``always`` pattern — the
+    in-memory governing set AND ``command_allowlist`` in config.yaml, which
+    ``save_permanent_allowlist`` deliberately only ever ADDS to. An explicit
+    user command is the one sanctioned removal path (operator parity: hand-editing
+    the list). Returns the number revoked per tier. YOLO is untouched.
+    """
+    from tools.approval_context import get_current_session_key
+
+    key = session_key or get_current_session_key("default")
+    with _lock:
+        session_removed = len(_session_approved.pop(key, set()) or set())
+        permanent = _permanent_set()
+        permanent_removed = len(permanent)
+        permanent.clear()
+        _permanent_baseline_by_home[_baseline_key()] = set()
+    if permanent_removed:
+        try:
+            from hermes_cli.config import load_config, save_config
+            config = load_config()
+            if config.get("command_allowlist"):
+                config["command_allowlist"] = []
+                save_config(config)
+        except Exception:  # config layer must not make the revoke fail; traceback for the log
+            logger.exception("forget-approvals: could not rewrite command_allowlist")
+    return {"session": session_removed, "permanent": permanent_removed}
+
+
 # --- Bypass check (yolo / mode=off) ---------------------------------------------------------------------------------
 
 def is_approval_bypass_active_for_session(session_key: str) -> bool:

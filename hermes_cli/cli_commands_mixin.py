@@ -1288,6 +1288,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             if out is not None:
                 return print(out)
         from hermes_cli.gateway_tools import handle_skills_slash  # + the gateway's rescan
+        from hermes_cli import skills_hub
+        if not getattr(self, "_skills_hub_provider_bound", False):
+            skills_hub.set_agent_provider(lambda: getattr(self, "agent", None))
+            self._skills_hub_provider_bound = True
         handle_skills_slash(cmd, ChatConsole(), cli=self)
 
     def _handle_memory_command(self, cmd: str):
@@ -1954,13 +1958,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             with suppress(Exception):
                 _cp(_dim_line(line))
 
-    # ---- persisted display toggles: /approvals, /footer, /timestamps ----------------------
-    def _handle_approvals_command(self, cmd_original: str) -> None:
-        """Show or persist the profile-wide dangerous-command approval mode."""
-        from hermes_cli.approval_mode import run_approval_mode_command
-        parts = (cmd_original or "").strip().split(None, 1)
-        result = run_approval_mode_command(parts[1] if len(parts) > 1 else None)
-        _cp(f"  {result.message}")
+    # ---- persisted display toggles: /footer, /timestamps -----------------------------------
 
     def _toggle_setting(self, arg: str, current: bool, *, usage: str, status_line: str,
                         config_key: str, label: str, failed: str):
