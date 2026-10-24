@@ -191,9 +191,23 @@ def restore_local_session(authority, sid):
     else:
         with store._lock:
             current = store._entry_locked(route)
-            if current is None or (current.session_id not in receipt.get('lineage', [sid])
-                                   and not _stray_route_target(authority, receipt, current.session_id)):
-                raise RuntimeStoreError('admission_conflict')
+            if current is None:
+                # Self-heal (the #140642 class): the receipt IS the route's truth and the live
+                # session above already passed every ownership check — a missing routing entry
+                # (pruned stale index, crashed-gateway self-heal) must rebuild from the receipt,
+                # exactly like the cold branch does, instead of refusing the conversation forever.
+                logging.getLogger(__name__).warning(
+                    'Local route for %s lost its routing entry while live; rebuilding it from the receipt',
+                    sid)
+                entry.origin = source
+                store._entries[route] = entry
+                current = entry
+            if (current.session_id not in receipt.get('lineage', [sid])
+                    and not _stray_route_target(authority, receipt, current.session_id)):
+                raise RuntimeStoreError(
+                    'admission_conflict',
+                    field='restore_route_entry',
+                    detail=f'route={route} current={current.session_id} target={target}')
             current.session_id = target
     return SessionRef(authority.profile_id, sid)
 
