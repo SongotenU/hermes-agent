@@ -213,6 +213,21 @@ def apply_stop_gates(
             "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
         )
         return verdict
+
+    # Advisor severity tiers (B11): a concern/blocker raised at the final answer — or
+    # actionable todos left open — buys exactly ONE more iteration, delivered as the
+    # synthetic user row above (cache-safe), never spliced into cached history.
+    from agent.advisor_notes import advisor_stop_nudge
+    _advisor_nudge = advisor_stop_nudge(agent, messages)
+    if _advisor_nudge:
+        agent._advisor_stop_nudges = getattr(agent, "_advisor_stop_nudges", 0) + 1
+        final_msg["finish_reason"] = "advisor_continue"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history, "advisor interim flush failed"
+        )
+        verdict = _continue(_advisor_nudge, "_advisor_synthetic")
+        logger.debug("advisor stop nudge issued (attempt %d)", agent._advisor_stop_nudges)
+        return verdict
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,

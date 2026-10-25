@@ -144,6 +144,13 @@ def _stored_agent(db, history, *, create=True):
     return agent, db.get_messages_as_conversation("sid")
 
 
+def _long_summary(text: str) -> str:
+    """Grow a terse mock summary past the degenerate-summary gate's size-scaled floor
+    (see agent.context_compressor._MIN_SUMMARY_SEED_CHARS); assertions search for
+    substrings, so padding the body is safe."""
+    return text + "\n\n" + ("Additional context retained for the summary fixture. " * 16)
+
+
 def _compress_here(agent, history, keep):
     return _compress(agent, history, f"here {keep}")
 
@@ -151,7 +158,9 @@ def _compress_here(agent, history, keep):
 def _compress(agent, history, raw):
     response = MagicMock()
     response.choices = [MagicMock()]
-    response.choices[0].message.content = "## Goal\nNumbered fruit questions.\n## Progress\nEarly ones answered."
+    response.choices[0].message.content = _long_summary(
+        "## Goal\nNumbered fruit questions.\n## Progress\nEarly ones answered."
+    )
     with patch("agent.context_compressor.call_llm", lambda **_kw: response):
         return compress_now(agent, history, parse_compress_args(raw), system_message="", skip_without_window=True)
 
@@ -345,3 +354,46 @@ def test_in_place_compress_keeps_foreign_rows_above_an_unpersisted_turn(session_
         assert any(content in (m.get("content") or "") for m in model_history)
         assert _flags(session_db, content) == [(0, 0), (1, 0)]
     assert session_db.search_messages("vault 7741")
+
+
+# --- Failure taxonomy (B3): structured codes for a failed manual /compress ---
+
+
+class TestCompressFailureTaxonomy:
+    def test_classifier_maps_known_shapes_conservatively(self):
+        from agent.context_compressor import StaleHeldHistory
+        from agent.conversation_compression import CompressionCheckpointUnavailable
+        from agent.conversation_compression_manual import classify_compress_failure
+
+        assert classify_compress_failure(StaleHeldHistory("held row 7 is no longer active")) == "changed"
+        assert classify_compress_failure(CompressionCheckpointUnavailable("no provider")) == "checkpoint"
+        assert classify_compress_failure(InterruptedError("Compression cancelled by the user")) == "cancelled"
+        assert classify_compress_failure(RuntimeError("database is locked")) == "persistence"
+        assert classify_compress_failure(RuntimeError("gremlins")) == "unknown"
+
+    def test_compress_now_failure_returns_structured_result_and_never_mutates(self):
+        from agent.conversation_compression_manual import render_compress_result
+
+        agent, history = _agent(), _history()
+        frozen = copy.deepcopy(history)
+        agent._compress_context.side_effect = RuntimeError("database is locked")
+
+        result = compress_now(agent, history, parse_compress_args(""))
+
+        assert result.status == "failed"
+        assert result.failure_kind == "persistence"
+        assert result.after_messages == frozen and history == frozen  # unchanged
+        line = "\n".join(render_compress_result(result))
+        assert "unchanged" in line
+        assert "database is locked" not in line  # classified kinds render fixed copy
+
+    def test_unknown_failure_keeps_the_raw_message_visible(self):
+        from agent.conversation_compression_manual import render_compress_result
+
+        agent, history = _agent(), _history()
+        agent._compress_context.side_effect = RuntimeError("gremlins in the compressor")
+
+        result = compress_now(agent, history, parse_compress_args(""))
+
+        assert result.status == "failed" and result.failure_kind == "unknown"
+        assert "gremlins in the compressor" in "\n".join(render_compress_result(result))
