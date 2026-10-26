@@ -3031,11 +3031,9 @@ def _run_oneshot_from_args(args) -> None:
 
 def _light_chat_parser():
     """Top-level + chat parser only (no subcommand tree); chat dispatches to cmd_chat."""
-    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli._parser import light_chat_parser
 
-    parser, _subparsers, chat_parser = build_top_level_parser()
-    chat_parser.set_defaults(func=cmd_chat)
-    return parser
+    return light_chat_parser()
 
 
 def _promote_top_level_resume(args) -> None:
@@ -3338,6 +3336,8 @@ def _build_cli_parser():
 
     from hermes_cli.portal_cli import add_parser as _add_portal_parser
     _add_portal_parser(subparsers)
+    from hermes_cli.seance_cli import add_parser as _add_seance_parser
+    _add_seance_parser(subparsers)
 
     from hermes_cli.kanban import build_parser as _build_kanban_parser
     _build_kanban_parser(subparsers).set_defaults(func=cmd_kanban)
