@@ -784,6 +784,12 @@ def content_hash(skill_path: Path) -> str:
     return f"sha256:{_content_digest(skill_path)[:16]}"
 
 
+def content_digest_full(skill_path: Path) -> str:
+    """Full canonical SHA-256 content digest (the same hash ``content_hash`` prefixes) for consumers
+    that need exact-content identity — skill revocations match on this, not on the 16-char truncation."""
+    return _content_digest(skill_path)
+
+
 def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url: str = "",
                       cache_dir: Path | None = None) -> tuple[ScanResult, dict]:
     """Scan plus attestation dict; the cache (keyed by content digest + source identity) only serves exact
