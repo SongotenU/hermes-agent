@@ -957,6 +957,24 @@ class GatewaySlashCommandsMixin(
         # system prompt/tool schema (prompt-cache prefix is sacred).
         return run_approval_mode_command(requested).message
 
+    async def _handle_forget_approvals_command(self, event: MessageEvent) -> str:
+        """Revoke this session's grants and the persisted approval allowlist.
+
+        Mutates profile-wide security policy (the allowlist), so the admin gate is
+        enforced here exactly like /approvals — the central slash gate can admit
+        non-admin users to selected commands."""
+        from gateway.slash_access import policy_for_runner_source
+        from tools.approval import forget_all_approval_grants
+
+        policy = policy_for_runner_source(self, event.source)
+        if not policy.is_admin(event.source.user_id):
+            return t("gateway.approvals.admin_only")
+        result = forget_all_approval_grants()
+        return (
+            f"Forgot {result['session']} session grant(s) and "
+            f"{result['permanent']} persisted pattern(s)."
+        )
+
     async def _handle_yolo_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /yolo — toggle dangerous command approval bypass for this session only. The flag is
         persisted on the routing entry so it survives a gateway restart."""
