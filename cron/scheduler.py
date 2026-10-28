@@ -532,6 +532,7 @@ from cron.jobs import (
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron import store_health
+from cron.constants import is_recurring
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
@@ -4293,6 +4294,81 @@ def _resolve_max_parallel_workers() -> Optional[int]:
         if _cfg_par is not None:
             return int(_cfg_par) or None
     return None
+
+
+def _cron_routine_gate_settings() -> tuple[bool, float]:
+    """``(skip_when_busy, min_interval_seconds)`` for the cron routine gate — both opt-in.
+
+    Env overrides (``HERMES_CRON_SKIP_WHEN_BUSY`` / ``HERMES_CRON_MIN_INTERVAL``) win like every
+    other cron knob and resolve through ``cron_env_setting`` (multiplex-safe). An invalid env
+    value logs and falls through to config.yaml.
+    """
+    skip_busy: Optional[bool] = None
+    min_interval: Optional[float] = None
+    _env_skip = cron_env_setting("HERMES_CRON_SKIP_WHEN_BUSY").strip().lower()
+    if _env_skip:
+        skip_busy = _env_skip in {"1", "true", "yes", "on"}
+    _env_min = cron_env_setting("HERMES_CRON_MIN_INTERVAL").strip()
+    if _env_min:
+        try:
+            min_interval = max(0.0, float(_env_min))
+        except (ValueError, TypeError):
+            logger.warning("Invalid HERMES_CRON_MIN_INTERVAL=%r; ignoring it", _env_min)
+    with contextlib.suppress(Exception):
+        _ucfg = load_config() or {}
+        _cfg = _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
+        if skip_busy is None and "skip_when_busy" in _cfg:
+            skip_busy = bool(_cfg.get("skip_when_busy"))
+        _cfg_min = _cfg.get("min_interval_seconds")
+        if min_interval is None and _cfg_min is not None:
+            try:
+                min_interval = max(0.0, float(_cfg_min))
+            except (ValueError, TypeError):
+                min_interval = None
+    return bool(skip_busy), float(min_interval or 0.0)
+
+
+def _apply_routine_gate(due_jobs: list) -> list:
+    """Drop due jobs the routine gate refuses; skipped occurrences are CONSUMED, not queued.
+
+    * ``busy`` — ``cron.skip_when_busy``: another cron run for THIS profile is already in flight
+      (or an earlier job in this same tick was accepted). Mercury's routine gate: a busy
+      profile's tick is refused rather than stacked.
+    * ``too_soon`` — ``cron.min_interval_seconds``: a recurring job whose last run is younger
+      than the floor (guards hand-made ``*/5`` routines). One-shots are never interval-gated.
+
+    Runs AFTER ``advance_next_runs`` — the at-most-once advance already consumed the occurrence,
+    so a refused job neither re-fires next tick nor double-runs. Each dropped job's execution
+    receipt is settled so the ledger never keeps a phantom claim.
+    """
+    skip_busy, min_interval = _cron_routine_gate_settings()
+    if not skip_busy and min_interval <= 0:
+        return due_jobs
+    home = hermes_home_key(_get_hermes_home())
+    in_flight = {key[1] for key in (_running_job_ids | _running_fire_owners.keys()) if key[0] == home}
+    accepted_this_tick = False
+    now = time.time()
+    kept: list = []
+    for job in due_jobs:
+        job_id = job.get("id")
+        label = job.get("name") or job_id
+        skip_reason = ""
+        if skip_busy and (accepted_this_tick or bool(in_flight - {job_id})):
+            skip_reason = "profile busy"
+        elif (min_interval > 0 and is_recurring(job)
+              and isinstance(job.get("last_run_at"), (int, float))
+              and (now - float(job["last_run_at"])) < min_interval):
+            skip_reason = (f"last run {now - float(job['last_run_at']):.0f}s ago "
+                           f"(< min interval {min_interval:.0f}s)")
+        if skip_reason:
+            logger.info("Cron '%s' skipped this occurrence: %s", label, skip_reason)
+            if job.get("execution_id"):
+                settle_unstarted_execution(
+                    job["execution_id"], job_id, f"Skipped by cron routine gate: {skip_reason}")
+            continue
+        accepted_this_tick = True
+        kept.append(job)
+    return kept
 
 
 def _sweep_mcp_orphans() -> None:

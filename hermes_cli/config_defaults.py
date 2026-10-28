@@ -1811,6 +1811,13 @@ DEFAULT_CONFIG = {
         # hard-interrupted and reported as failed with a token-budget notice. 0 = unlimited.
         # Env override: HERMES_CRON_MAX_TOKENS.
         "max_tokens_per_run": 0,
+        # Routine gate (opt-in): refuse — not queue — a due occurrence when the profile already
+        # has a cron run in flight (skip_when_busy) or a recurring job ran within the floor
+        # (min_interval_seconds; one-shots exempt). Skipped occurrences are consumed — the
+        # at-most-once advance already ran — and the execution receipt is settled. Env
+        # overrides: HERMES_CRON_SKIP_WHEN_BUSY / HERMES_CRON_MIN_INTERVAL.
+        "skip_when_busy": False,
+        "min_interval_seconds": 0,
         # Default model for cron jobs (WHAT model runs). Fire-time resolution: per-job pin >
         # cron.model > model.default (the main agent model). An unpinned job follows the main
         # model on every run; cron.model decouples the whole fleet from chat. "" = fall through.
