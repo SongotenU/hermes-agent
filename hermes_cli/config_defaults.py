@@ -1784,6 +1784,16 @@ DEFAULT_CONFIG = {
         "allow_lazy_installs": True,
     },
 
+    # Local spend meter (hermes_cli/budget.py): today's tokens across ALL sessions, shown by
+    # /usage on every surface and by `hermes usage`. Measured from the per-session token
+    # counters; sessions are attributed to their start day. 0 = no cap (today's usage still
+    # renders). This is a meter, not an enforcement gate — cron.max_tokens_per_run is the
+    # runaway-cost backstop, and an interactive hard block would make Hermes unusable mid-day.
+    "budget": {
+        "daily_tokens": 0,
+        # Mark the /usage line at/above this percentage of the cap.
+        "warn_percent": 80,
+    },
     "cron": {
         "catch_up_missed": True,  # False skips recurring misses beyond the local grace window.
         # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by

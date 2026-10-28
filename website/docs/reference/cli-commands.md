@@ -722,6 +722,11 @@ the credential pool); the command never adds or refreshes a credential it would 
 `0` on success; `1` with a single stderr line when no credential is configured for the provider, the provider
 has no usage endpoint, or the fetch fails (stdout stays empty).
 
+The human block ends with the local daily-spend line (`budget.daily_tokens` — see
+[Daily Token Budget](../user-guide/configuration.md#daily-token-budget-spend-meter)); `--json` carries the
+same numbers as a `budget` object (`daily_tokens`, `warn_percent`, `used_tokens`, `cost_usd`, `percent`,
+`over`, `warn`) whenever the local state DB is readable.
+
 `--json` schema (keys are stable; new keys may be added):
 
 ```json
