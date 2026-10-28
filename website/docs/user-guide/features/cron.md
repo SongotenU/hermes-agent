@@ -881,6 +881,18 @@ cron:
 
 Set `cleanup_timeout_seconds: 0` only to restore the legacy unbounded cleanup behavior.
 
+## Per-run token budget
+
+A hard cap on tokens a job may burn in ONE fire (prompt + completion, cumulative across the run's API calls; a resumed session's preloaded counters do not count). A run that crosses the cap is hard-interrupted and recorded as **failed** with a token-budget notice naming the cap — the same scheduler-side ladder as the inactivity watchdog, so it is never blamed on the model service and never retried on its own.
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  max_tokens_per_run: 300000   # 0 = no cap (default)
+```
+
+Or set `HERMES_CRON_MAX_TOKENS`. The resolution order is: env var → config.yaml → no cap. This is the runaway-cost backstop for agent fleets: a looping job is stopped at the cap instead of quietly eating the day's budget.
+
 ## Media send timeout
 
 When a cron delivery includes media attachments (a generated PDF, TTS audio, an exported report) sent through a live gateway adapter, each attachment upload is bounded by a timeout — 300 seconds by default. Large files on slow uplinks can need more:

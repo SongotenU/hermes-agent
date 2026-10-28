@@ -262,7 +262,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     ``classify_api_error`` verdict and the copy table in ``scheduler_failure_copy``."""
     from cron.scheduler_failure_copy import (
         classify_cron_failure_reason, generic_failure_notice, inactivity_notice,
-        provider_failure_notice, script_timeout_notice)
+        provider_failure_notice, script_timeout_notice, token_budget_notice)
 
     job_name = job.get("name") or job.get("id") or "cron job"
     job_id = job.get("id") or job_name
@@ -274,6 +274,14 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # See #78503, #82460.
     if lower.startswith("script timed out"):
         return script_timeout_notice(job_name, job_id)
+
+    # Per-run token budget stop (marker ``cron.max_tokens_per_run``): deterministic scheduler-side
+    # text — like the inactivity watchdog it must be recognised BEFORE provider classification, or
+    # a burned run reads like a model-service failure.
+    if "cron.max_tokens_per_run" in lower:
+        _tb = re.search(r"used ([\d,]+) tokens \(limit ([\d,]+) per run\)", text)
+        return token_budget_notice(
+            job_name, job_id, _tb.group(1) if _tb else "", _tb.group(2) if _tb else "")
 
     # Scheduler inactivity watchdog ("idle for {n}s (limit {m}s)"): the job's OWN tool call went
     # quiet, no model service involved. Its text may still contain "timed out", so it must be
@@ -529,7 +537,7 @@ from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, settle_unstarted_execution, terminalize_dead_owner)
-from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
+from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop, token_budget_loop
 from cron.scheduler_bookkeeping import _classify_delivery_outcome
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
@@ -1215,6 +1223,34 @@ def _cron_inactivity_seconds() -> float:
     except (ValueError, TypeError):
         logger.warning("Invalid HERMES_CRON_TIMEOUT=%r; using default 600s", raw)
         return 600.0
+
+
+def _cron_token_budget() -> Optional[int]:
+    """Per-fire token cap: ``HERMES_CRON_MAX_TOKENS`` env > ``cron.max_tokens_per_run``.
+
+    0 / absent = no cap (the default). Env wins like every other cron tuning knob
+    (``HERMES_CRON_TIMEOUT`` / ``HERMES_CRON_MAX_PARALLEL``) and resolves through
+    ``cron_env_setting`` so a multiplexed fire reads its own profile's scope.
+    """
+    try:
+        _env_tokens = cron_env_setting("HERMES_CRON_MAX_TOKENS").strip()
+        if _env_tokens:
+            _env_val = int(_env_tokens)
+            return _env_val if _env_val > 0 else None
+    except (ValueError, TypeError):
+        logger.warning("Invalid HERMES_CRON_MAX_TOKENS=%r; ignoring the per-run token budget",
+                       cron_env_setting("HERMES_CRON_MAX_TOKENS"))
+    with contextlib.suppress(Exception):
+        _ucfg = load_config() or {}
+        _cfg_tokens = (_ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}).get("max_tokens_per_run")
+        if _cfg_tokens is not None:
+            _cfg_val = int(_cfg_tokens)
+            return _cfg_val if _cfg_val > 0 else None
+    return None
+
+
+# Watchdog / progress cadence. Module-level so tests can tighten it without a real 5s poll.
+_CRON_POLL_INTERVAL = 5.0
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
@@ -1954,6 +1990,23 @@ def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
         f"— last activity: {_last_desc}")
 
 
+def _raise_token_budget_exceeded(agent, job_name: str, used_tokens: int, limit_tokens: int) -> None:
+    """Hard-interrupt a run that burned through ``cron.max_tokens_per_run`` and raise.
+
+    Same scheduler-side ladder as the inactivity watchdog (hard interrupt, failed status, one chat
+    notice — never a provider failure, never a retry). The text carries the marker
+    ``cron.max_tokens_per_run`` so the delivery summarizer picks ``token_budget_notice``.
+    """
+    logger.error(
+        "Job '%s' exceeded its per-run token budget: %s >= %s tokens (cron.max_tokens_per_run)",
+        job_name, f"{int(used_tokens):,}", f"{int(limit_tokens):,}")
+    request_hard_interrupt(agent, "Cron job stopped: per-run token budget exceeded",
+                           tool_reason="cron token budget")
+    raise RuntimeError(
+        f"Cron job '{job_name}' used {int(used_tokens):,} tokens "
+        f"(limit {int(limit_tokens):,} per run) — stopped by cron.max_tokens_per_run")
+
+
 def _run_agent_with_watchdog(
     agent, prompt: str, job: dict, job_id: str, job_name: str, task_id: str, cancel_event,
     worker_state: Optional[dict] = None,
@@ -1962,7 +2015,8 @@ def _run_agent_with_watchdog(
     watchdog: default 600s, override HERMES_CRON_TIMEOUT, 0 = unlimited."""
     _cron_timeout = _cron_inactivity_seconds()
     _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-    _POLL_INTERVAL = 5.0
+    _token_limit = _cron_token_budget()
+    _POLL_INTERVAL = _CRON_POLL_INTERVAL
     # Heartbeat the one-shot run_claim while alive: without it a long run looks like a dead owner
     # and gets re-dispatched / stale-removed out from under the live run.
     # Keep the one-shot run_claim fresh while the run is alive (#62002): the claim TTL is a dead-owner
@@ -2001,11 +2055,14 @@ def _run_agent_with_watchdog(
     _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     # Carry scheduler-scoped ContextVar state (e.g. env passthrough) into the worker thread.
     _cron_context = contextvars.copy_context()
+    # Per-fire baseline: the cap counts THIS run's spend, never a resumed session's history.
+    _tokens_at_start = int(getattr(agent, "session_total_tokens", 0) or 0)
     _cron_future = _cron_pool.submit(
         _cron_context.run, agent.run_conversation, prompt, task_id=task_id)
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False
+    _token_budget_hit = False
     _watch_stop = threading.Event()
 
     def _idle_seconds() -> float:
@@ -2026,8 +2083,23 @@ def _run_agent_with_watchdog(
             stop=_watch_stop, future_done=_cron_future.done, meter=_awake_idle):
             _inactivity_timeout = True
 
+    def _tokens_now() -> int:
+        return int(getattr(agent, "session_total_tokens", 0) or 0) - _tokens_at_start
+
+    def _watch_token_budget() -> None:
+        nonlocal _token_budget_hit
+        if _token_limit is None:
+            return
+        if token_budget_loop(
+            tokens_used=_tokens_now, limit_tokens=_token_limit, poll_s=_POLL_INTERVAL,
+            stop=_watch_stop, future_done=_cron_future.done,
+        ):
+            _token_budget_hit = True
+
     _watch_thread = threading.Thread(
         target=_watch_inactivity, name=f"cron-inactivity-{str(job_id)[:8]}", daemon=True)
+    _token_thread = threading.Thread(
+        target=_watch_token_budget, name=f"cron-token-budget-{str(job_id)[:8]}", daemon=True)
     # Ledger progress stamps: the stale-claim sweep measures silence since the last stamp.
     _progress = ExecutionProgressStamper(
         str(job.get("execution_id") or ""), job_name, idle_seconds=_idle_seconds,
@@ -2039,7 +2111,12 @@ def _run_agent_with_watchdog(
             # loop / hung ``get_activity_summary`` on this thread can no longer keep the 600s inactivity
             # limit from firing (#94285).
             _watch_thread.start()
-        if _cron_inactivity_limit is None and not _is_oneshot and cancel_event is None:
+        if _token_limit is not None:
+            # Its own daemon thread: the cap must fire even while the run_job thread is blocked
+            # in future.result() — the blocking fast path below is disabled when a cap is set.
+            _token_thread.start()
+        if (_cron_inactivity_limit is None and _token_limit is None
+                and not _is_oneshot and cancel_event is None):
             result = _cron_future.result()
         else:
             result = None
@@ -2049,7 +2126,7 @@ def _run_agent_with_watchdog(
                     _abort_if_fire_claim_lost()
                     result = _cron_future.result()
                     break
-                if _inactivity_timeout:
+                if _inactivity_timeout or _token_budget_hit:
                     break
                 _abort_if_fire_claim_lost()
                 _heartbeat_run_claim_if_due()
@@ -2063,6 +2140,9 @@ def _run_agent_with_watchdog(
 
     if _inactivity_timeout:
         _raise_inactivity_timeout(agent, job_name, _cron_inactivity_limit)
+
+    if _token_budget_hit and _token_limit is not None:
+        _raise_token_budget_exceeded(agent, job_name, _tokens_now(), _token_limit)
 
     if not isinstance(result, dict):
         raise RuntimeError(

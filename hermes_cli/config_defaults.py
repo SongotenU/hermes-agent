@@ -1796,6 +1796,11 @@ DEFAULT_CONFIG = {
         # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.
         # False = fail during the run instead.
         "preflight": True,
+        # Hard per-fire token cap (prompt + completion, cumulative across the run's API calls;
+        # a resumed session's preloaded counters do not count). A run that crosses the cap is
+        # hard-interrupted and reported as failed with a token-budget notice. 0 = unlimited.
+        # Env override: HERMES_CRON_MAX_TOKENS.
+        "max_tokens_per_run": 0,
         # Default model for cron jobs (WHAT model runs). Fire-time resolution: per-job pin >
         # cron.model > model.default (the main agent model). An unpinned job follows the main
         # model on every run; cron.model decouples the whole fleet from chat. "" = fall through.
