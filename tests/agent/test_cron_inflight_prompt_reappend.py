@@ -86,7 +86,9 @@ def _compress(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     response.choices = [MagicMock()]
     response.choices[0].message.content = (
         "## Historical Task Snapshot\nUser asked: '" + JOB_SENTINEL + "'\n"
-        "## Summary\nRan a bunch of terminal steps."
+        "## Summary\nRan a bunch of terminal steps.\n"
+        # Grow past the degenerate-summary gate's size-scaled floor; assertions search substrings.
+        + "Additional context retained for the summary fixture. " * 16
     )
     compressor = _make_compressor()
     with patch("agent.context_compressor.call_llm", return_value=response):

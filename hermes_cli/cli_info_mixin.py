@@ -715,6 +715,18 @@ class CLIInfoMixin:
             print(f"  {line}")
         print()
 
+    def _print_daily_budget(self) -> None:
+        """One local-spend line (``budget.daily_tokens`` meter); silent without a state DB."""
+        try:
+            from hermes_cli.budget import budget_snapshot, render_budget_line
+            from hermes_state import SessionDB
+
+            snap = budget_snapshot(SessionDB())
+            print(f"  {render_budget_line(snap, markdown=False, keys_prefix='cli.usage')}")
+            print()
+        except Exception:
+            return
+
     def _show_usage(self):
         """Rate limits + session token usage (when a live agent exists) + Nous credits.
 
@@ -722,6 +734,8 @@ class CLIInfoMixin:
         agent — the TUI's /usage slash-worker resumes the session WITHOUT building an agent.
         """
         from cli import datetime, format_duration_compact
+
+        self._print_daily_budget()
 
         def _credits_or(fallback: str) -> None:
             # Account limits (e.g. Codex subscription windows) need only the configured provider
