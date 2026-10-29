@@ -556,6 +556,9 @@ gateway:
     no_data: "Geen gebruiksdata beskikbaar vir hierdie sessie nie."
     unknown_subcommand: "Onbekende /usage subopdrag: `{args}`. Probeer `/usage` of `/usage reset [--force]`."
     reset_wrong_provider: "Gebankte gebruikslimiet-terugstellings is slegs beskikbaar op die openai-codex verskaffer. Skakel eers oor met `/model`."
+    budget_today: "💰 **Vandag (alle sessies):** {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ **Vandag (alle sessies):** {used}{cap_part}{cost_part} — nader aan vandag se begroting"
+    budget_today_over: "🛑 **Vandag (alle sessies):** {used}{cap_part}{cost_part} — oor vandag se begroting (`budget.daily_tokens`)"
   credits:
     not_logged_in: "Nie by Nous Portal aangemeld nie. Meld aan om jou kredietsaldo te sien en op te laai."
   verbose:
@@ -3319,6 +3322,10 @@ cli:
     label_current_context: "Huidige konteks:"
     label_messages: "Boodskappe:"
     label_compressions: "Saamperserings:"
+    budget_today: "💰 Vandag (alle sessies): {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ Vandag (alle sessies): {used}{cap_part}{cost_part} — nader aan vandag se begroting"
+    budget_today_over: "🛑 Vandag (alle sessies): {used}{cap_part}{cost_part} — oor vandag se begroting (budget.daily_tokens)"
+    budget_hint: "Stel budget.daily_tokens in config.yaml om 'n daaglikse perk te volg."
   verbose:
     label_off: "Gereedskap-vordering: AF"
     detail_off: "stil modus, net die finale antwoord."
