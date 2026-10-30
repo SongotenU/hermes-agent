@@ -556,6 +556,9 @@ gateway:
     no_data: "لا تتوفّر بيانات استخدام لهذه الجلسة."
     unknown_subcommand: "أمر فرعي غير معروف لـ /usage: `{args}`. جرّب `/usage` أو `/usage reset [--force]`."
     reset_wrong_provider: "إعادة تعيين الاستخدام المُدّخر متاحة فقط على مزوّد openai-codex. بدّل عبر `/model` أولًا."
+    budget_today: "💰 **اليوم (كل الجلسات):** {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ **اليوم (كل الجلسات):** {used}{cap_part}{cost_part} — تقترب من ميزانية اليوم"
+    budget_today_over: "🛑 **اليوم (كل الجلسات):** {used}{cap_part}{cost_part} — تجاوزت ميزانية اليوم (`budget.daily_tokens`)"
   credits:
     not_logged_in: "لم تُسجّل الدخول إلى Nous Portal. سجّل الدخول لرؤية رصيد أرصدتك وإعادة الشحن."
   verbose:
@@ -3319,6 +3322,10 @@ cli:
     label_current_context: "السياق الحالي:"
     label_messages: "الرسائل:"
     label_compressions: "عمليات الضغط:"
+    budget_today: "💰 اليوم (كل الجلسات): {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ اليوم (كل الجلسات): {used}{cap_part}{cost_part} — تقترب من ميزانية اليوم"
+    budget_today_over: "🛑 اليوم (كل الجلسات): {used}{cap_part}{cost_part} — تجاوزت ميزانية اليوم (budget.daily_tokens)"
+    budget_hint: "اضبط budget.daily_tokens في config.yaml لتتبع حد يومي."
   verbose:
     label_off: "تقدّم الأدوات: معطّل"
     detail_off: "الوضع الصامت، الرد النهائي فقط."

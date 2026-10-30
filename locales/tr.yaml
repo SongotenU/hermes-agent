@@ -556,6 +556,9 @@ gateway:
     no_data: "Bu oturum için kullanım verisi yok."
     unknown_subcommand: "Bilinmeyen /usage alt komutu: `{args}`. `/usage` veya `/usage reset [--force]` deneyin."
     reset_wrong_provider: "Biriktirilen limit sıfırlamaları yalnızca openai-codex sağlayıcısında kullanılabilir. Önce `/model` ile geçiş yapın."
+    budget_today: "💰 **Bugün (tüm oturumlar):** {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ **Bugün (tüm oturumlar):** {used}{cap_part}{cost_part} — bugünün bütçesine yaklaşılıyor"
+    budget_today_over: "🛑 **Bugün (tüm oturumlar):** {used}{cap_part}{cost_part} — bugünün bütçesi aşıldı (`budget.daily_tokens`)"
   credits:
     not_logged_in: "Nous Portal'a giriş yapılmadı. Bakiyenizi görmek ve yükleme yapmak için giriş yapın."
   verbose:
@@ -3319,6 +3322,10 @@ cli:
     label_current_context: "Geçerli bağlam:"
     label_messages: "Mesajlar:"
     label_compressions: "Sıkıştırmalar:"
+    budget_today: "💰 Bugün (tüm oturumlar): {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ Bugün (tüm oturumlar): {used}{cap_part}{cost_part} — bugünün bütçesine yaklaşılıyor"
+    budget_today_over: "🛑 Bugün (tüm oturumlar): {used}{cap_part}{cost_part} — bugünün bütçesi aşıldı (budget.daily_tokens)"
+    budget_hint: "Günlük sınırı izlemek için config.yaml içinde budget.daily_tokens ayarlayın."
   verbose:
     label_off: "Araç ilerlemesi: KAPALI"
     detail_off: "sessiz mod, yalnızca son yanıt."

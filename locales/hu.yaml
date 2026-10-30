@@ -559,6 +559,9 @@ gateway:
     no_data: "Ehhez a munkamenethez nincsenek elérhető használati adatok."
     unknown_subcommand: "Ismeretlen /usage alparancs: `{args}`. Próbáld: `/usage` vagy `/usage reset [--force]`."
     reset_wrong_provider: "A félretett limit-visszaállítások csak az openai-codex szolgáltatónál érhetők el. Válts először a `/model` paranccsal."
+    budget_today: "💰 **Ma (összes munkamenet):** {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ **Ma (összes munkamenet):** {used}{cap_part}{cost_part} — közeledik a mai kerethez"
+    budget_today_over: "🛑 **Ma (összes munkamenet):** {used}{cap_part}{cost_part} — túllépte a mai keretet (`budget.daily_tokens`)"
   credits:
     not_logged_in: "Nincs bejelentkezve a Nous Portalra. Jelentkezz be a kreditegyenleg megtekintéséhez és feltöltéséhez."
   verbose:
@@ -3336,6 +3339,10 @@ cli:
     label_current_context: "Jelenlegi kontextus:"
     label_messages: "Üzenetek:"
     label_compressions: "Tömörítések:"
+    budget_today: "💰 Ma (összes munkamenet): {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ Ma (összes munkamenet): {used}{cap_part}{cost_part} — közeledik a mai kerethez"
+    budget_today_over: "🛑 Ma (összes munkamenet): {used}{cap_part}{cost_part} — túllépte a mai keretet (budget.daily_tokens)"
+    budget_hint: "Állítsd be a budget.daily_tokens értéket a config.yaml-ban a napi limit követéséhez."
   verbose:
     label_off: "Eszközfolyamat: KI"
     detail_off: "csendes mód, csak a végső válasz."
