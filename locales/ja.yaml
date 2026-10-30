@@ -556,6 +556,9 @@ gateway:
     no_data: "このセッションの使用データはありません。"
     unknown_subcommand: "不明な /usage サブコマンド: `{args}`。`/usage` または `/usage reset [--force]` をお試しください。"
     reset_wrong_provider: "バンクされた使用制限リセットは openai-codex プロバイダーでのみ利用できます。まず `/model` で切り替えてください。"
+    budget_today: "💰 **本日（全セッション）:** {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ **本日（全セッション）:** {used}{cap_part}{cost_part} — 本日の予算に接近"
+    budget_today_over: "🛑 **本日（全セッション）:** {used}{cap_part}{cost_part} — 本日の予算を超過 (`budget.daily_tokens`)"
   credits:
     not_logged_in: "Nous Portal にログインしていません。ログインすると残高の確認とチャージができます。"
   verbose:
@@ -3319,6 +3322,10 @@ cli:
     label_current_context: "現在のコンテキスト:"
     label_messages: "メッセージ:"
     label_compressions: "圧縮回数:"
+    budget_today: "💰 本日（全セッション）: {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ 本日（全セッション）: {used}{cap_part}{cost_part} — 本日の予算に接近"
+    budget_today_over: "🛑 本日（全セッション）: {used}{cap_part}{cost_part} — 本日の予算を超過 (budget.daily_tokens)"
+    budget_hint: "config.yaml の budget.daily_tokens を設定すると 1 日の上限を追跡できます。"
   verbose:
     label_off: "ツール進行表示: オフ"
     detail_off: "サイレントモード。最終応答のみ表示します。"

@@ -1329,6 +1329,20 @@ When a budget is set, two things happen:
 
 The budget is per `run_conversation` turn (it resets on each user message) and the feature is completely dormant when unset — no clock reads, no injection, no timeout changes.
 
+## Daily Token Budget (spend meter)
+
+`budget.daily_tokens` turns the token counters every session already writes into a "how much have I used **today**" line, shown by `/usage` on every surface (CLI, TUI, desktop, messaging) and by `hermes usage` (human block plus a `budget` key in `--json`).
+
+```yaml
+budget:
+  daily_tokens: 0        # 0 = no cap (today's usage still renders)
+  warn_percent: 80       # the /usage line turns ⚠ at/above this share of the cap
+```
+
+"Today" = sessions **started** since local midnight: `SUM(input_tokens + output_tokens)` and the billed-else-estimated cost across all sessions, child/subagent rows included. A session resumed across midnight counts on its start day — the counters on that row are cumulative.
+
+This is a **meter, not an enforcement gate**: it never blocks a run and never touches a prompt. The runaway-cost backstop is the cron per-fire cap (`cron.max_tokens_per_run`); a hard interactive block would make Hermes unusable mid-day. Scripts that want to act on the number can read `hermes usage --json` and branch on `budget.over`.
+
 ## Verify-on-Stop (coding verification)
 
 When enabled, Hermes refuses to accept a final answer on a turn where the agent edited code in a workspace but produced no fresh verification evidence (a passing test run, build, lint, etc.) — it injects a synthetic follow-up asking the agent to verify or explain why it can't. Doc/markdown/skill-only edits never trigger it, and the loop is bounded so it can never trap the agent.
