@@ -556,6 +556,9 @@ gateway:
     no_data: "Keine Nutzungsdaten für diese Sitzung verfügbar."
     unknown_subcommand: "Unbekannter /usage-Unterbefehl: `{args}`. Versuche `/usage` oder `/usage reset [--force]`."
     reset_wrong_provider: "Gespeicherte Limit-Resets sind nur mit dem openai-codex-Anbieter verfügbar. Wechsle zuerst mit `/model`."
+    budget_today: "💰 **Heute (alle Sitzungen):** {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ **Heute (alle Sitzungen):** {used}{cap_part}{cost_part} — nähert sich dem heutigen Budget"
+    budget_today_over: "🛑 **Heute (alle Sitzungen):** {used}{cap_part}{cost_part} — über dem heutigen Budget (`budget.daily_tokens`)"
   credits:
     not_logged_in: "Nicht bei Nous Portal angemeldet. Melde dich an, um dein Guthaben zu sehen und aufzuladen."
   verbose:
@@ -3319,6 +3322,10 @@ cli:
     label_current_context: "Aktueller Kontext:"
     label_messages: "Nachrichten:"
     label_compressions: "Komprimierungen:"
+    budget_today: "💰 Heute (alle Sitzungen): {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ Heute (alle Sitzungen): {used}{cap_part}{cost_part} — nähert sich dem heutigen Budget"
+    budget_today_over: "🛑 Heute (alle Sitzungen): {used}{cap_part}{cost_part} — über dem heutigen Budget (budget.daily_tokens)"
+    budget_hint: "Setze budget.daily_tokens in config.yaml, um ein Tageslimit zu verfolgen."
   verbose:
     label_off: "Tool-Fortschritt: AUS"
     detail_off: "stiller Modus, nur die endgültige Antwort."
