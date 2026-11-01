@@ -26,7 +26,7 @@ from agent.skill_utils import (
     TIER_LOCAL, clip_skill_description, extract_skill_conditions, extract_skill_description,
     get_disabled_skill_names, get_skill_search_roots,
     iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
-    skill_matches_platform, skill_matches_platform_list,
+    skill_matches_platform, skill_matches_platform_list, skill_model_invocable,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write, file_cache_version
@@ -564,6 +564,14 @@ STEER_MARKER_OPEN = (
     "once at this position; not tool output and not a new delivery when replayed from conversation history]"
 )
 STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
+# Delivery-time priority trailer (ported from xai-org/grok-build's interjection framing,
+# UNFINISHED_TASKS_REMINDER): a mid-turn steer can be silently skipped while the model finishes the
+# old task — the trailer orders the reply first and the resumption after. Ships inside the trusted
+# envelope on every steer; kept short.
+STEER_PRIORITY_NOTE = (
+    "If the user is asking for a response, address the user first. "
+    "After replying, complete any unfinished tasks from previous turns."
+)
 # Text after the "[" that opens one of Hermes' own control frames (the steer marker above, the compaction
 # handoff and its fallbacks, runtime/system notes, agent.context_compressor._SYNTHETIC_USER_ROW_PREFIXES,
 # agent.title_generator._MACHINE_PREFIXES). Consumers that republish model output as role=user text
@@ -577,7 +585,7 @@ CONTROL_FRAME_OPENERS = (
 
 def format_steer_marker(steer_text: str) -> str:
     """Wrap a mid-turn steer in the self-describing marker (see note above)."""
-    return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}\n{STEER_MARKER_CLOSE}"
+    return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}\n{STEER_PRIORITY_NOTE}\n{STEER_MARKER_CLOSE}"
 
 
 STEER_DISPLAY_KIND = "steer"
@@ -1078,7 +1086,8 @@ _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); v4 adds ``rel`` (SKILL.md path relative to its root) for
-# duplicate-name resolution; v5 stores descriptions clipped at a word boundary. Older snapshots are rebuilt.
+# duplicate-name resolution; v5 adds ``model_invocable`` (invocation-surface gate) and stores
+# descriptions clipped at a word boundary. Older snapshots are rebuilt.
 _SKILLS_SNAPSHOT_VERSION = 5
 
 
@@ -1147,6 +1156,7 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
         "requires_apps": _requires_apps_list(frontmatter),
+        "model_invocable": skill_model_invocable(frontmatter),
     }
     return entry
 
@@ -1207,6 +1217,8 @@ def _plugin_skill_prompt_rows(
             frontmatter = meta.get("frontmatter") or {}
             if not (skill_matches_platform(frontmatter) and skill_matches_environment(frontmatter)
                     and skill_matches_apps(frontmatter)):
+                continue
+            if not skill_model_invocable(frontmatter):
                 continue
             if not _skill_should_show(extract_skill_conditions(frontmatter), available_tools,
                                       available_toolsets, session_platform):
@@ -1427,7 +1439,8 @@ def _build_skills_system_prompt_inner(
         rows += _scan_extra_root(root, iter_skill_index_files(root, "SKILL.md"), tier, "Error reading external skill %s: %s")
     resolved = resolve_skill_catalog([
         {**entry, "name": _entry_name(entry), "path": entry["root"] / entry["rel"],
-         "visible": ok and not hides(entry.get("skill_name") or "", entry.get("conditions") or {})}
+         "visible": ok and entry.get("model_invocable", True)
+         and not hides(entry.get("skill_name") or "", entry.get("conditions") or {})}
         for entry, ok in rows])
     visible_entries = [e for e in resolved
                        if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)]

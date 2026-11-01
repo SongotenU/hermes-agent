@@ -325,7 +325,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
         if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
             # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
-            from agent.conversation_compression import _extract_steer_text_from_message
+            from agent.conversation_compression_steer import _extract_steer_text_from_message
             content_text = _extract_steer_text_from_message(m) or content_text
         if role == "tool":
             tc_name, tc_args = tool_call_args.get(m.get("tool_call_id") or "", (None, None))

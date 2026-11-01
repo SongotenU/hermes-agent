@@ -560,6 +560,9 @@ gateway:
     no_data: "No usage data available for this session."
     unknown_subcommand: "Unknown /usage subcommand: `{args}`. Try `/usage` or `/usage reset [--force]`."
     reset_wrong_provider: "Banked usage resets are only available on the openai-codex provider. Switch with `/model` first."
+    budget_today: "💰 **Today (all sessions):** {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ **Today (all sessions):** {used}{cap_part}{cost_part} — nearing today's budget"
+    budget_today_over: "🛑 **Today (all sessions):** {used}{cap_part}{cost_part} — over today's budget (`budget.daily_tokens`)"
   credits:
     not_logged_in: "Not logged into Nous Portal. Log in to see your credit balance and top up."
   verbose:
@@ -3407,6 +3410,10 @@ cli:
     checking_reset_credits: "⏳ Checking banked reset credits..."
     codex_timeout: "❌ Timed out talking to the Codex backend — try again shortly."
     no_api_calls: "(._.) No API calls made yet in this session."
+    budget_today: "💰 Today (all sessions): {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ Today (all sessions): {used}{cap_part}{cost_part} — nearing today's budget"
+    budget_today_over: "🛑 Today (all sessions): {used}{cap_part}{cost_part} — over today's budget (budget.daily_tokens)"
+    budget_hint: "Set budget.daily_tokens in config.yaml to track a daily cap."
     header_session: "📊 Session Token Usage"
     label_model: "Model:"
     label_input_tokens: "Input tokens:"

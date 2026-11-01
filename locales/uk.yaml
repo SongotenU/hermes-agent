@@ -556,6 +556,9 @@ gateway:
     no_data: "Дані про використання для цього сеансу відсутні."
     unknown_subcommand: "Невідома підкоманда /usage: `{args}`. Спробуйте `/usage` або `/usage reset [--force]`."
     reset_wrong_provider: "Накопичені скидання лімітів доступні лише з провайдером openai-codex. Спочатку перемкніться через `/model`."
+    budget_today: "💰 **Сьогодні (усі сесії):** {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ **Сьогодні (усі сесії):** {used}{cap_part}{cost_part} — наближення до сьогоднішнього ліміту"
+    budget_today_over: "🛑 **Сьогодні (усі сесії):** {used}{cap_part}{cost_part} — перевищено сьогоднішній ліміт (`budget.daily_tokens`)"
   credits:
     not_logged_in: "Ви не ввійшли в Nous Portal. Увійдіть, щоб переглянути баланс кредитів і поповнити його."
   verbose:
@@ -3319,6 +3322,10 @@ cli:
     label_current_context: "Поточний контекст:"
     label_messages: "Повідомлень:"
     label_compressions: "Стиснень:"
+    budget_today: "💰 Сьогодні (усі сесії): {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ Сьогодні (усі сесії): {used}{cap_part}{cost_part} — наближення до сьогоднішнього ліміту"
+    budget_today_over: "🛑 Сьогодні (усі сесії): {used}{cap_part}{cost_part} — перевищено сьогоднішній ліміт (budget.daily_tokens)"
+    budget_hint: "Встановіть budget.daily_tokens у config.yaml, щоб відстежувати денний ліміт."
   verbose:
     label_off: "Прогрес інструментів: OFF"
     detail_off: "тихий режим, лише остаточна відповідь."

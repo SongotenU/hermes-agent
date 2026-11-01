@@ -20,12 +20,14 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
 from agent.memory_context import build_memory_context_block
+from agent.magic_keywords import apply_magic_keywords
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
 from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
 from agent.plugin_live_notes import pop_plugin_notices
 from agent.skills_index_delta import stage_skills_index_note
 from agent.prompt_refresh import refresh_warm_prompt
+from agent.memory_delta import stage_memory_delta_note
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
@@ -178,6 +180,11 @@ def consume_surface_switch_note(agent: Any) -> str:
 def consume_skills_index_note(agent: Any) -> str:
     """Pop the skills-index delta staged by the system-prompt restore; same channel as above."""
     return _pop_turn_note(agent, "_skills_index_note")
+
+
+def consume_memory_delta_note(agent: Any) -> str:
+    """Pop the memory-files delta staged by the system-prompt restore; same channel as above."""
+    return _pop_turn_note(agent, "_memory_delta_note")
 
 
 def append_notes_to_multimodal_content(content: Any, notes: Optional[str]) -> bool:
@@ -463,6 +470,7 @@ def _should_run_preflight_estimate(
 def _should_idle_compact(
     *, enabled: bool, idle_after_seconds: int, idle_gap_seconds: float, tokens: int,
     floor_tokens: int, cooldown_active: bool, last_compaction_tokens: int = 0,
+    prompt_cache_persistent: bool = False,
 ) -> bool:
     """Pure predicate: idle compaction fires after a wall-clock gap of
     ``idle_after_seconds`` (opt-in, <= 0 disables), independent of ``threshold_tokens``;
@@ -482,6 +490,11 @@ def _should_idle_compact(
     prompt on a slow route, reclaiming nothing (#97239).
     """
     if not enabled or idle_after_seconds <= 0 or idle_gap_seconds < idle_after_seconds or cooldown_active:
+        return False
+    # A route whose prompt cache never expires has the cost/benefit inverted: an idle
+    # compaction reclaims tokens but throws away the whole warm prefix cache (parity with
+    # oh-my-pi's promptCachePersistent gate on logged-in Codex accounts).
+    if prompt_cache_persistent:
         return False
     effective_floor = floor_tokens
     if last_compaction_tokens > 0:
@@ -868,7 +881,8 @@ def _merge_gateway_notes(
     _turn_notes = "\n\n".join(
         part for part in (consume_gateway_turn_context_notes(agent), pop_plugin_notices(agent),
                           consume_surface_switch_note(agent),
-                          consume_skills_index_note(agent)) if part
+                          consume_skills_index_note(agent),
+                          consume_memory_delta_note(agent)) if part
     )
     if not _turn_notes:
         return plugin_user_context
@@ -1086,8 +1100,10 @@ def build_turn_context(
 
     if isinstance(user_message, str):
         user_message = sanitize_surrogates(user_message)
+        user_message = apply_magic_keywords(user_message)
     if isinstance(persist_user_message, str):
         persist_user_message = sanitize_surrogates(persist_user_message)
+        persist_user_message = apply_magic_keywords(persist_user_message)
 
     effective_task_id, turn_id = _bind_turn_identity(
         agent, task_id, stream_callback, persist_user_message,
@@ -1193,6 +1209,9 @@ def build_turn_context(
     # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
     # prompt in memory for the whole conversation and would never re-check its skills index.
     stage_skills_index_note(agent, active_system_prompt, messages)
+    # Same channel, same reason: MEMORY.md / USER.md can be edited by another session or a hand
+    # edit while this conversation's frozen prompt keeps the old bytes.
+    stage_memory_delta_note(agent, active_system_prompt, messages)
     plugin_user_context = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context
     )

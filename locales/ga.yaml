@@ -556,6 +556,9 @@ gateway:
     no_data: "Níl aon sonraí úsáide ar fáil don seisiún seo."
     unknown_subcommand: "Fo-ordú /usage anaithnid: `{args}`. Bain triail as `/usage` nó `/usage reset [--force]`."
     reset_wrong_provider: "Níl athshocruithe teorann bainc ar fáil ach ar an soláthraí openai-codex. Athraigh le `/model` ar dtús."
+    budget_today: "💰 **Inniu (gach seisiún):** {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ **Inniu (gach seisiún):** {used}{cap_part}{cost_part} — ag druidim le buiséad an lae inniu"
+    budget_today_over: "🛑 **Inniu (gach seisiún):** {used}{cap_part}{cost_part} — thar bhuiséad an lae inniu (`budget.daily_tokens`)"
   credits:
     not_logged_in: "Níl tú logáilte isteach i Nous Portal. Logáil isteach chun d'iarmhéid creidmheasa a fheiceáil agus breis a chur leis."
   verbose:
@@ -3319,6 +3322,10 @@ cli:
     label_current_context: "Comhthéacs reatha:"
     label_messages: "Teachtaireachtaí:"
     label_compressions: "Dlúthuithe:"
+    budget_today: "💰 Inniu (gach seisiún): {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ Inniu (gach seisiún): {used}{cap_part}{cost_part} — ag druidim le buiséad an lae inniu"
+    budget_today_over: "🛑 Inniu (gach seisiún): {used}{cap_part}{cost_part} — thar bhuiséad an lae inniu (budget.daily_tokens)"
+    budget_hint: "Socraigh budget.daily_tokens i config.yaml chun teorainn laethúil a rianú."
   verbose:
     label_off: "Dul chun cinn uirlise: AS"
     detail_off: "mód ciúin, an freagra deiridh amháin."

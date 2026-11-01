@@ -134,6 +134,25 @@ metadata:
 
 **Use case for `requires_*`:** Create a skill that only makes sense when certain tools are present. For example, a web scraping workflow skill with `requires_toolsets: [web]` won't clutter the prompt when web tools are disabled.
 
+### Invocation Surfaces (User vs Model)
+
+Two independent frontmatter flags control who can invoke a skill; both default to `true`:
+
+```yaml
+user_invocable: false    # No /slash-command auto-registration (model can still load it)
+model_invocable: false   # Hidden from the model index + skills_list; skill_view refuses
+                         # model-initiated loads (user slash invocation still works)
+```
+
+| Flag | `false` means |
+|------|---------------|
+| `user_invocable` | The skill gets no auto-registered `/<name>` command and is hidden from command menus/palettes. The model can still see and load it. |
+| `model_invocable` | The skill is excluded from the `<available_skills>` index and `skills_list`, and the `skill_view` tool refuses to load it for the model. User-initiated loads — its slash command, `--skills` preload, `skills.auto_load` — still work. |
+
+**Use case for `model_invocable: false`:** a user-driven workflow (e.g. a release checklist) that should only run when explicitly invoked, never because the model decided it looked relevant.
+
+**Use case for `user_invocable: false`:** an internal skill that would clutter the slash-command menu but is still useful to the model.
+
 ### Environment Variable Requirements
 
 Skills can declare environment variables they need. When a skill is loaded via `skill_view`, its required vars are automatically registered for passthrough into sandboxed execution environments (terminal, execute_code).

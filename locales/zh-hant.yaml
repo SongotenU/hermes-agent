@@ -556,6 +556,9 @@ gateway:
     no_data: "此工作階段沒有可用的使用資料。"
     unknown_subcommand: "未知的 /usage 子命令:`{args}`。請嘗試 `/usage` 或 `/usage reset [--force]`。"
     reset_wrong_provider: "儲存的用量重設僅在 openai-codex 提供者上可用。請先使用 `/model` 切換。"
+    budget_today: "💰 **今天（全部工作階段）:** {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ **今天（全部工作階段）:** {used}{cap_part}{cost_part} — 接近今日預算"
+    budget_today_over: "🛑 **今天（全部工作階段）:** {used}{cap_part}{cost_part} — 已超出今日預算 (`budget.daily_tokens`)"
   credits:
     not_logged_in: "未登入 Nous Portal。登入後即可查看額度餘額並儲值。"
   verbose:
@@ -3319,6 +3322,10 @@ cli:
     label_current_context: "目前上下文："
     label_messages: "訊息數："
     label_compressions: "壓縮次數："
+    budget_today: "💰 今天（全部工作階段）: {used}{cap_part}{cost_part}"
+    budget_today_warn: "⚠️ 今天（全部工作階段）: {used}{cap_part}{cost_part} — 接近今日預算"
+    budget_today_over: "🛑 今天（全部工作階段）: {used}{cap_part}{cost_part} — 已超出今日預算 (budget.daily_tokens)"
+    budget_hint: "在 config.yaml 中設定 budget.daily_tokens 以追蹤每日上限。"
   verbose:
     label_off: "工具進度：OFF"
     detail_off: "靜默模式，只顯示最終回應。"

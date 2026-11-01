@@ -12,10 +12,10 @@ import json
 import sys
 
 
-def usage_snapshot_document(snapshot) -> dict:
+def usage_snapshot_document(snapshot, budget: dict | None = None) -> dict:
     """``hermes usage --json`` document. Schema is documented in website/docs/reference/cli-commands.md —
     keep the keys stable; extend only by adding keys."""
-    return {
+    doc = {
         "provider": snapshot.provider,
         "source": snapshot.source,
         "title": snapshot.title,
@@ -33,6 +33,9 @@ def usage_snapshot_document(snapshot) -> dict:
         "details": list(snapshot.details),
         "unavailable_reason": snapshot.unavailable_reason,
     }
+    if budget is not None:
+        doc["budget"] = budget
+    return doc
 
 
 def cmd_usage(args: argparse.Namespace) -> int:
@@ -40,6 +43,7 @@ def cmd_usage(args: argparse.Namespace) -> int:
     from agent.account_usage import fetch_account_usage, render_account_usage_lines
     from hermes_cli.runtime_provider import resolve_requested_provider
 
+    budget_doc = _budget_document()
     provider = resolve_requested_provider(getattr(args, "provider", None))
     # No explicit key: the fetcher resolves the credential exactly as a session without a live agent
     # would (singleton store, then credential pool) — it never adopts or refreshes anything else.
@@ -50,12 +54,37 @@ def cmd_usage(args: argparse.Namespace) -> int:
             "the provider has no usage endpoint, or the fetch failed.",
             file=sys.stderr,
         )
+        _print_budget_block(budget_doc, as_json=getattr(args, "json", False))
         return 1
     if getattr(args, "json", False):
-        print(json.dumps(usage_snapshot_document(snapshot), indent=2))
+        print(json.dumps(usage_snapshot_document(snapshot, budget=budget_doc), indent=2))
     else:
         print("\n".join(render_account_usage_lines(snapshot)))
+        _print_budget_block(budget_doc)
     return 0
+
+
+def _budget_document() -> dict | None:
+    """Today's local spend vs ``budget.daily_tokens`` (None when the state DB is unavailable)."""
+    try:
+        from hermes_cli.budget import budget_snapshot
+        from hermes_state import SessionDB
+        return budget_snapshot(SessionDB())
+    except Exception:
+        return None
+
+
+def _print_budget_block(snap: dict | None, *, as_json: bool = False) -> None:
+    """Human line (stderr-safe block) or nothing; JSON callers get the key via the document."""
+    if snap is None or as_json:
+        return
+    from agent.i18n import t
+
+    from hermes_cli.budget import render_budget_line
+    print()
+    print(render_budget_line(snap, markdown=False, keys_prefix="cli.usage"))
+    if not snap["daily_tokens"]:
+        print(t("cli.usage.budget_hint"))
 
 
 def build_usage_parser(subparsers) -> None:
