@@ -829,6 +829,30 @@ def _render_report_markdown(p: dict[str, Any]) -> str:
 
 # --- Orchestrator — spawn a forked AIAgent for the LLM review pass ---
 
+def _model_hidden_skill_names() -> set[str]:
+    """Names of skills whose SKILL.md opts out of model-initiated reads (``model_invocable: false``).
+
+    The review fork's only read path (``skill_view``) refuses model-initiated loads of
+    these, so listing one burns the pass on refused reads until the same-tool-failure
+    halt ends the run with zero findings — the same failure mode as ``skills.disabled``
+    in :func:`_render_candidate_list`.
+    """
+    from agent.skill_utils import parse_frontmatter, skill_model_invocable
+    base = skill_usage._skills_dir()
+    if not base.exists():
+        return set()
+    hidden: set[str] = set()
+    for name, skill_md in skill_usage._iter_skill_mds(base, local_only=True):
+        try:
+            frontmatter, _ = parse_frontmatter(
+                skill_md.read_text(encoding="utf-8-sig", errors="replace"))
+        except OSError:
+            continue
+        if not skill_model_invocable(frontmatter):
+            hidden.add(name)
+    return hidden
+
+
 def _render_candidate_list() -> str:
     """Human/agent-readable list of LLM consolidation candidates.
 
@@ -842,12 +866,15 @@ def _render_candidate_list() -> str:
     Skills in ``skills.disabled`` (global or platform list) are excluded for
     the same reason on the read side: ``skill_view`` — the pass's only read
     path — refuses them, so the fork retries the same refused read until
-    the same-tool-failure halt ends the run with zero findings.
+    the same-tool-failure halt ends the run with zero findings. Skills with
+    ``model_invocable: false`` join for the same read-side reason.
     """
     disabled = get_disabled_skill_names()
+    model_hidden = _model_hidden_skill_names()
     rows = [
         r for r in skill_usage.curated_report()
         if not skill_usage.is_bundled(r["name"]) and r["name"] not in disabled
+        and r["name"] not in model_hidden
     ]
     if not rows:
         return "No agent-created skills to review."

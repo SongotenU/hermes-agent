@@ -61,18 +61,18 @@ DEFAULT_CONFIG = {
         "storage": "hermes-home",
     },
     "agent": {
-        # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
-        # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
+        # Turn cap: positive int, or null/"none"/0/-1 = unlimited (caps caused silent truncation).
         "max_turns": None,
-        # Optional one-time model-visible checkpoint warning before a finite turn cap is exhausted.
-        # null = off; set a ratio strictly between 0 and 1 (for example, 0.75).
+        # Advisor tiers (OMP): final-answer findings ≥ severity (nit|concern|blocker) buy one continuation; todo concerns unless advisor_continue_on_todos=false.
+        "advisor_continue_severity": "concern",
+        "advisor_continue_on_todos": True,
+        # One-time model-visible checkpoint warning before a finite turn cap; null = off (ratio 0..1, e.g. 0.75).
         "budget_warning_ratio": None,
-        # Wall-clock budget (seconds) per run. null = off. When set: one-time wrap-up notice at 80%
-        # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
-        # `hermes chat --run-budget N`.
+        # Wall-clock budget (s) per run; null = off. One-time 80% wrap-up notice; stale timeouts capped.
         "run_budget_seconds": None,
-        # Gateway inactivity timeout (seconds). Only fires when the agent is completely idle — not
-        # while calling tools or receiving API responses. 0 = unlimited.
+        # In-history system updates (DSH parity): tail-append on capable routes; false = defer.
+        "in_history_system_updates": False,
+        # Gateway inactivity timeout (s), only when fully idle (never mid-tool/response). 0 = unlimited.
         "gateway_timeout": 1800,
         # Max seconds an alias routing key waits for the active turn holding the same session lease;
         # on expiry the message is rejected with a resend notice. Keep short: Telegram dispatches
@@ -1782,6 +1782,16 @@ DEFAULT_CONFIG = {
         "allow_lazy_installs": True,
     },
 
+    # Local spend meter (hermes_cli/budget.py): today's tokens across ALL sessions, shown by
+    # /usage on every surface and by `hermes usage`. Measured from the per-session token
+    # counters; sessions are attributed to their start day. 0 = no cap (today's usage still
+    # renders). This is a meter, not an enforcement gate — cron.max_tokens_per_run is the
+    # runaway-cost backstop, and an interactive hard block would make Hermes unusable mid-day.
+    "budget": {
+        "daily_tokens": 0,
+        # Mark the /usage line at/above this percentage of the cap.
+        "warn_percent": 80,
+    },
     "cron": {
         "catch_up_missed": True,  # False skips recurring misses beyond the local grace window.
         # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by
@@ -1794,6 +1804,18 @@ DEFAULT_CONFIG = {
         # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.
         # False = fail during the run instead.
         "preflight": True,
+        # Hard per-fire token cap (prompt + completion, cumulative across the run's API calls;
+        # a resumed session's preloaded counters do not count). A run that crosses the cap is
+        # hard-interrupted and reported as failed with a token-budget notice. 0 = unlimited.
+        # Env override: HERMES_CRON_MAX_TOKENS.
+        "max_tokens_per_run": 0,
+        # Routine gate (opt-in): refuse — not queue — a due occurrence when the profile already
+        # has a cron run in flight (skip_when_busy) or a recurring job ran within the floor
+        # (min_interval_seconds; one-shots exempt). Skipped occurrences are consumed — the
+        # at-most-once advance already ran — and the execution receipt is settled. Env
+        # overrides: HERMES_CRON_SKIP_WHEN_BUSY / HERMES_CRON_MIN_INTERVAL.
+        "skip_when_busy": False,
+        "min_interval_seconds": 0,
         # Default model for cron jobs (WHAT model runs). Fire-time resolution: per-job pin >
         # cron.model > model.default (the main agent model). An unpinned job follows the main
         # model on every run; cron.model decouples the whole fleet from chat. "" = fall through.
@@ -2013,6 +2035,15 @@ DEFAULT_CONFIG = {
         # The flag is the user's off switch; availability additionally requires
         # the portal sign-in every managed tool gates on.
         "connectors": {"enabled": True},
+        "callback_deadlines": {
+            # Per-callback deadline budgets in seconds. When a callback exceeds
+            # its budget, it is cut (fail-open for observers, fail-closed for
+            # veto hooks when Phase 5 lands). None/disabled = no enforcement.
+            "check_fn": 5.0,
+            "pre_hook": 10.0,
+            "post_hook": 10.0,
+            # "handler": not set globally — per-tool declares its own timeout
+        },
     },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING

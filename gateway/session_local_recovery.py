@@ -208,11 +208,17 @@ def restore_local_session(authority, sid):
             if current is None:
                 # A route the loaded store cannot see (an older release's scope, a pruned row) is the
                 # receipt's to rebuild, as on a cold restore: refusing wedges every claim until a restart.
+                logging.getLogger(__name__).warning(
+                    'Local route for %s lost its routing entry while live; rebuilding it from the receipt',
+                    sid)
                 entry.origin = source
                 store._entries[route] = entry
             elif (current.session_id not in receipt.get('lineage', [sid])
                     and not _stray_route_target(authority, receipt, current.session_id)):
-                raise RuntimeStoreError('admission_conflict')
+                raise RuntimeStoreError(
+                    'admission_conflict',
+                    field='restore_route_entry',
+                    detail=f'route={route} current={current.session_id} target={target}')
             else:
                 current.session_id = target
     return SessionRef(authority.profile_id, sid)
