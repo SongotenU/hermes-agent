@@ -80,6 +80,40 @@ def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name:
     return mounts or None
 
 
+def _make_ssrf_redirect_guard(original_url: str):
+    """Response-hook factory: refuse redirect hops that leave the configured origin's trust class.
+
+    The MCP URL comes from the user's config, but a redirect target is chosen by the remote
+    server: a public endpoint ``302``-ing to ``http://169.254.169.254/…`` or an internal host
+    would otherwise be dialed by the follower (httpx, or the SDK's client) with no re-validation —
+    mirroring ``vision_tools._ssrf_redirect_guard``. MCP-specific exemption: when the CONFIGURED
+    URL is itself private/loopback (the common local-server setup), its redirects are not policed
+    — a local endpoint is the user's own trust domain, and blocking same-host scheme upgrades
+    (http → https on 127.0.0.1) would break working servers. The origin's class is resolved once
+    per hook lifetime (one client build) through the same policy as the pre-flight checks
+    (``security.allow_private_urls`` / per-host allowlist), so a user who opted into private URLs
+    keeps redirects to private URLs.
+    """
+    origin_is_public: Optional[bool] = None
+
+    async def _guard(response) -> None:
+        nonlocal origin_is_public
+        from tools.url_safety import async_is_safe_url, redirect_target_from_response
+        redirect_url = redirect_target_from_response(response)
+        if not redirect_url:
+            return
+        if origin_is_public is None:
+            origin_is_public = await async_is_safe_url(original_url)
+        if not origin_is_public:
+            return
+        if not await async_is_safe_url(redirect_url):
+            raise ValueError(
+                f"Blocked redirect to private/internal address: {redirect_url} "
+                f"(configured MCP endpoint: {original_url})")
+
+    return _guard
+
+
 def _pgroup_alive(pgid: Optional[int]) -> bool:
     """Signal 0 to the group succeeds iff any member is alive (POSIX only)."""
     try:
@@ -467,6 +501,7 @@ class MCPServerTransportMixin:
         try:
             async with _build_client(
                     follow_redirects=True, timeout=_httpx.Timeout(timeout), transport=probe_transport,
+                    event_hooks={"response": [_make_ssrf_redirect_guard(url)]},
                     **_present(mounts=_mcp_proxy_mounts(_httpx, url, ssl_verify, client_cert, self.name))) as client:
                 resp = await client.head(url, headers=probe_headers)  # cheapest; GET on 405/501
                 if resp.status_code in (405, 501):
@@ -553,6 +588,7 @@ class MCPServerTransportMixin:
             return _httpx_mod.AsyncClient(
                 follow_redirects=True,
                 timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
+                event_hooks={"response": [_make_ssrf_redirect_guard(url)]},
                 transport=_make_mcp_body_cap_transport(_httpx_mod, inner_transport),
                 **_present(mounts=_mcp_proxy_mounts(_httpx_mod, url, ssl_verify, client_cert, self.name),
                            headers=headers, auth=auth))
@@ -569,6 +605,9 @@ class MCPServerTransportMixin:
                 raise ImportError(f"MCP server '{self.name}' requires mcp >= 1.24.0 to "
                                   "enforce the portable redirect-header boundary "
                                   "(strict_redirect_headers). Upgrade the mcp package.")
+            logger.debug("MCP server '%s': redirect SSRF guard unavailable — the deprecated "
+                         "streamable-HTTP client (mcp < 1.24) owns its httpx client; upgrade "
+                         "the mcp package to enable it", self.name)
             return _core.streamablehttp_client(url, headers=headers, timeout=float(connect_timeout), verify=ssl_verify,
                                                **_present(auth=oauth_auth))
         # Explicit AsyncClient matching the SDK's create_mcp_http_client defaults; MUST come from the
@@ -581,7 +620,9 @@ class MCPServerTransportMixin:
         inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_make_http_rejection_recorder(self._http_rejection)]},
+                               "event_hooks": {"response": [
+                                   _make_http_rejection_recorder(self._http_rejection),
+                                   _make_ssrf_redirect_guard(url)]},
                                "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}
