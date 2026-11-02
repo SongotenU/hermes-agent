@@ -246,7 +246,7 @@ class TestGenerateSummaryTruncationGuard:
         c._summary_failure_cooldown_until = 0
         with patch(
             "agent.context_compressor.call_llm",
-            return_value=_mock_response("fine", "stop"),
+            return_value=_mock_response("fine — a realistic summary body kept above the seed floor", "stop"),
         ):
             result = c._generate_summary(_msgs(2))
         assert result is not None
