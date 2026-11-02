@@ -136,6 +136,20 @@ def inactivity_notice(job_name: str, job_id: str) -> str:
     )
 
 
+def token_budget_notice(job_name: str, job_id: str, used_tokens: str = "", limit_tokens: str = "") -> str:
+    """The per-run token cap stop (scheduler-side, like inactivity — never a provider failure)."""
+    burned = (
+        f"it used {used_tokens} tokens this run, over its per-run budget of {limit_tokens}"
+        if used_tokens and limit_tokens
+        else "it hit its per-run token budget"
+    )
+    return (
+        f"⚠️ Cron '{job_name}' stopped: {burned} (`cron.max_tokens_per_run`). "
+        f"Raise the limit (or set it to 0 for no cap) and run it again with "
+        f"`hermes cron run {job_id}`. Full run: `hermes cron runs {job_id}`."
+    )
+
+
 def blocked_config_notice(job_name: str, reason: str) -> str:
     """One-time notice when the pre-run configuration check refused to start the job."""
     reason = reason.rstrip()
