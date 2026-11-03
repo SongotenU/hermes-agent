@@ -63,10 +63,11 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     except Exception:
         return  # plugin system unavailable (bare tool-only imports, minimal tests)
     try:
-        kwargs.setdefault("turn_id", _approval_turn_id.get())
-        kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
-        if _approval_session_id.get():
-            kwargs.setdefault("session_id", _approval_session_id.get())
+        obs = get_observability_context()
+        kwargs.setdefault("turn_id", obs["turn_id"])
+        kwargs.setdefault("tool_call_id", obs["tool_call_id"])
+        if obs["session_id"]:
+            kwargs.setdefault("session_id", obs["session_id"])
         invoke_hook(hook_name, **kwargs)
     except Exception as exc:
         # invoke_hook() swallows per-callback errors; this is the dispatch layer itself failing.
@@ -111,6 +112,17 @@ def is_viewer_turn_with_approver() -> bool:
         return False
     with live.event_stream.lock:
         return any("session:approve" in member.capabilities for member in live.subscribers.values())
+
+
+
+def get_observability_context() -> dict:
+    """Correlation ids currently bound for approval hooks/audit:
+    ``{"session_id", "turn_id", "tool_call_id"}`` (empty strings when unbound)."""
+    return {
+        "session_id": _approval_session_id.get() or "",
+        "turn_id": _approval_turn_id.get() or "",
+        "tool_call_id": _approval_tool_call_id.get() or "",
+    }
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
