@@ -245,6 +245,20 @@ platforms: [macos, linux]     # macOS and Linux
 
 When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted, the skill loads on all platforms.
 
+### User-Only and Model-Only Skills
+
+Two independent flags control who can invoke a skill (both default to `true`):
+
+```yaml
+user_invocable: false    # No /slash-command auto-registration (model can still load it)
+model_invocable: false   # Hidden from the model; only the user can load it
+```
+
+- `user_invocable: false` — the skill gets no auto-registered `/<name>` command and stays out of command menus. The model can still see it in the skills index and load it.
+- `model_invocable: false` — the skill is hidden from the model's skills index and `skills_list()`, and the model cannot load it via `skill_view`. Its slash command, `--skills` preload, and `skills.auto_load` still work for you.
+
+Use `model_invocable: false` for user-driven workflows (a release checklist, a destructive cleanup) that should only run when you explicitly invoke them.
+
 ## Skill output and media delivery
 
 When a skill response (or any agent response) includes a bare absolute path to a media file — for example `/home/user/screenshots/diagram.png` — the gateway auto-detects it, strips it from the visible text, and delivers the file natively to the user's chat (Telegram photo, Discord attachment, etc.) instead of leaving the raw path in the message.

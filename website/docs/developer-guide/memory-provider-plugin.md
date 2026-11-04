@@ -521,6 +521,33 @@ plugins/memory/my-provider/
 └── README.md        # Setup instructions
 ```
 
+## Relevance-Selected Recall (memdir pattern)
+
+The built-in store injects MEMORY.md/USER.md **whole**, by design: curator + write approval
+keep them small (char-capped), so relevance selection would add an LLM call for nothing. A
+standalone provider whose memory is a **directory of many files** should select instead of
+dumping — the Claude Code `memdir` pattern, mapped onto the ABC:
+
+1. **Manifest, not contents.** `prefetch()` scans the directory and builds an index of
+   `name · first-line description · mtime · size`, capped at **≤200 lines / 25 KB**. Never
+   load every file to describe it.
+2. **One selection call, ≤5 files, empty allowed.** Ask an auxiliary model which files (by
+   index number) matter for the current user turn. The selector MUST be allowed to answer
+   *none* — a provider that always injects five files is noise. Parse defensively; on any
+   failure fall back to the top-N freshest (mtime), never to "inject everything".
+3. **Anti-noise inputs.** Give the selector the turn text plus the recently-used tool names
+   (a coding turn rarely needs dinner-plan memories). Cap injected bytes and report the
+   count through `RecallStatus` so the indicator stays honest.
+4. **Freshness is mtime.** Sort by mtime; age is part of the manifest. Do not trust content
+   ordering or filenames as recency.
+5. **Injection point is session/prefetch-scoped.** Selected content arrives through the
+   normal `prefetch()`/`system_prompt_block` path — never by rewriting the system prompt
+   mid-conversation (prompt-caching invariant).
+
+`prefetch` runs off the turn on a worker started by `spawn_context_thread` (see
+[Threading Contract](#threading-contract)); the selector's auxiliary call therefore needs the
+caller's contextvars — bind them, don't spawn bare threads.
+
 ## Single Provider Rule
 
 Only **one** external memory provider can be active at a time. If a user tries to register a second, the MemoryManager rejects it with a warning. This prevents tool schema bloat and conflicting backends.

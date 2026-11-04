@@ -554,6 +554,18 @@ class GatewayStatusCommandsMixin:
         except Exception:
             return []
 
+    def _daily_budget_lines(self) -> list[str]:
+        """Local daily spend line for /usage (``budget.daily_tokens``); [] when unavailable."""
+        try:
+            db = getattr(self, "_session_db", None)
+            if db is None:
+                return []
+            from hermes_cli.budget import budget_snapshot, render_budget_line
+            snap = budget_snapshot(db)
+            return [render_budget_line(snap, markdown=True, keys_prefix="gateway.usage")]
+        except Exception:
+            return []
+
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage -- token usage for the current session (live or cached agent) plus
         account/credit blocks; ``/usage reset [--force]`` redeems a banked Codex reset credit."""
@@ -611,9 +623,14 @@ class GatewayStatusCommandsMixin:
         from agent.plan_limits import portal_wording
         credits_lines = [portal_wording(line) for line in credits_lines]
 
+        # Local daily spend meter (`budget.daily_tokens`) — the same numbers `hermes usage` shows.
+        # Off the event loop (state-DB scan); fail-open, never break /usage.
+        budget_lines = await _quiet(
+            lambda: asyncio.to_thread(self._daily_budget_lines), [])
+
         def _with_account_blocks(lines: list[str]) -> str:
             # Each block is preceded by a blank divider only when something precedes it.
-            for block in (account_lines, credits_lines):
+            for block in (account_lines, credits_lines, budget_lines):
                 if block:
                     if lines:
                         lines.append("")
