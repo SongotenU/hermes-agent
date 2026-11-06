@@ -1100,7 +1100,9 @@ DELEGATE_TASK_SCHEMA = {
                         "context": _p(
                             "string",
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
-                            "sees only its own context — repeat shared background in every task that needs it.",
+                            "sees only its own context — repeat shared background in every task that needs it. "
+                            "Write it as a handoff summary (goal + constraints, decisions, files touched, "
+                            "commands/tests run, open failures, pending questions), never as pasted transcript.",
                         ),
                         "output_schema": _p(
                             "object",
