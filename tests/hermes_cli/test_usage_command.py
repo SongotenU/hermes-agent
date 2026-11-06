@@ -52,7 +52,12 @@ def test_hermes_usage_json_is_one_stable_document(capsys):
         {"label": "Weekly", "used_percent": 12.5, "resets_at": None, "detail": None},
     ]
     assert doc["details"] == ["You have 1 reset banked - use /usage reset to activate"]
-    assert set(doc) == {"provider", "source", "title", "plan", "fetched_at", "windows", "details", "unavailable_reason"}
+    # Schema contract: the documented keys are always present; extensions only ADD keys.
+    assert {"provider", "source", "title", "plan", "fetched_at", "windows", "details",
+            "unavailable_reason"} <= set(doc)
+    if "budget" in doc:  # local spend meter — additive key, present when the state DB is readable
+        assert {"daily_tokens", "warn_percent", "used_tokens", "cost_usd", "percent",
+                "over", "warn"} <= set(doc["budget"])
 
 
 def test_hermes_usage_without_credential_exits_nonzero_with_one_stderr_line(capsys):
