@@ -301,8 +301,9 @@ def _set_session_yolo(session_key: str, enabled: bool) -> None:
 
 
 def enable_session_yolo(session_key: str) -> None:
-    """Enable YOLO bypass for a single session key."""
-    _set_session_yolo(session_key, True)
+    """Enable YOLO bypass for a single session key (refused under a managed approvals.max_mode cap)."""
+    if approval_context.session_yolo_allowed():
+        _set_session_yolo(session_key, True)
 
 
 def disable_session_yolo(session_key: str) -> None:
@@ -350,8 +351,9 @@ def is_current_session_yolo_enabled() -> bool:
 
 def _yolo_active() -> bool:
     """CLI ``--yolo`` (process-scoped, frozen at import) or gateway ``/yolo``
-    (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    (session-scoped; a managed ``approvals.max_mode`` cap keeps an armed bypass inert).
+    Hardline / deny-rule floors run BEFORE this everywhere."""
+    if _YOLO_MODE_FROZEN or (is_current_session_yolo_enabled() and approval_context.session_yolo_allowed()):
         return True
     from gateway.session_finite import unattended_turn
     return unattended_turn()
@@ -1016,8 +1018,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     # Gateway/async approval: block the agent thread until /approve or /deny, mirroring the CLI's synchronous input()
     # flow. The agent never sees "approval_required" here — it gets output or a definitive BLOCKED.
     if is_gateway or is_ask:
-        # Redacted copies for user-visible rendering only (the gateway paints them into Discord/Slack); the raw
-        # command still executes after approval and persistence keys off pattern_key.
+        # Redacted copies for user-visible rendering only; the raw command still executes after approval.
         display_command = redact_approval_display(command)
         display_description = redact_approval_display(description)
         notify_cb = _gateway_notify_cb(session_key)

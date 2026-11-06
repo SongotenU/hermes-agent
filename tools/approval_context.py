@@ -9,6 +9,7 @@ import contextlib
 import contextvars
 import logging
 import os
+from typing import Optional
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
@@ -384,15 +385,61 @@ def _get_approval_config() -> dict:
         return {}
 
 
+# Approval-mode ladder, most relaxed → most restrictive. ``off`` auto-approves, ``smart`` lets the
+# guardian model decide, ``manual`` asks the human. Ported from T3 Code's permission modes capped by
+# managed policy (pin 6577c6b61851): the LADDER lives here so the clamp is one function.
+_APPROVAL_MODE_LADDER = ("off", "smart", "manual")
+
+
+def _managed_approvals_cap() -> Optional[str]:
+    """``approvals.max_mode`` from the MANAGED scope only: the most relaxed mode anyone may use.
+
+    Read from the managed layer, never the user's config — a cap the subject can edit is not a cap.
+    ``None`` when unset or when no managed scope exists (both mean: no cap, today's behaviour).
+    An unrecognized value caps at ``manual`` (fail-closed: a typo can never unlock).
+    """
+    try:
+        from hermes_cli.managed_scope import load_managed_config
+        raw = cfg_get(load_managed_config(), "approvals", "max_mode", default="")
+    except Exception:
+        logger.warning("Could not read the managed approvals.max_mode; leaving approvals uncapped", exc_info=True)
+        return None
+    val = str(raw or "").strip().lower()
+    if not val:
+        return None
+    if val in _APPROVAL_MODE_LADDER:
+        return val
+    logger.warning("Managed approvals.max_mode=%r is not one of off/smart/manual; capping at manual", raw)
+    return "manual"
+
+
+def _clamp_approval_mode(mode: str) -> str:
+    """Return *mode* unless the managed cap allows less: the effective mode is the stricter of the two."""
+    cap = _managed_approvals_cap()
+    if cap is None:
+        return mode
+    clamped = _APPROVAL_MODE_LADDER[max(_APPROVAL_MODE_LADDER.index(mode), _APPROVAL_MODE_LADDER.index(cap))]
+    if clamped != mode:
+        logger.info("approvals.max_mode=%s from the managed policy overrides the configured mode %s", cap, mode)
+    return clamped
+
+
+def session_yolo_allowed() -> bool:
+    """YOLO bypasses every approval, so it is more relaxed than ``off``: a managed cap of anything
+    but ``off`` forbids it. No cap → allowed (today's behaviour)."""
+    return _managed_approvals_cap() in (None, "off")
+
+
 def _get_approval_mode() -> str:
-    """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config)."""
+    """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config; a managed
+    ``approvals.max_mode`` cap clamps the answer to the most restrictive mode it allows)."""
     try:
         from gateway.hosted_room_execution_policy import current_room_execution_policy
         if (room_policy := current_room_execution_policy()) is not None:
-            return room_policy.approval_mode
+            return _clamp_approval_mode(room_policy.approval_mode)
     except Exception:
         pass
-    return _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
+    return _clamp_approval_mode(_normalize_approval_mode(_get_approval_config().get("mode", "manual")))
 
 
 def _get_approval_timeout() -> int:

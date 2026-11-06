@@ -3129,6 +3129,23 @@ Smart mode is particularly useful for reducing approval fatigue — it lets the 
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::
 
+### Managed approval cap (`approvals.max_mode`)
+
+A hosted install can cap how far approvals may be relaxed. Set it in the **managed scope**
+(`/etc/hermes/config.yaml`, or `HERMES_MANAGED_DIR`) — never in your own config, where it would only
+restrict yourself:
+
+```yaml
+approvals:
+  max_mode: manual   # off | smart | manual — the most relaxed mode anyone may use
+```
+
+The effective mode is the stricter of `approvals.mode` and the cap (`off` < `smart` < `manual`), and
+`/yolo` is refused while the cap is anything but `off` — YOLO bypasses every check, so it is more
+relaxed than `off`. An unrecognized `max_mode` caps at `manual`; with no managed scope the cap is
+absent and nothing changes. The operator's own `--yolo` launch flag is not capped: it is
+root-equivalent authority over the process.
+
 ### Denial circuit breaker
 
 `approvals.denial_breaker_threshold` (default `3`) guards against the agent retrying variations of a command the smart-approval reviewer keeps denying — each retry burns another guardian LLM call. After that many consecutive denials in a session, the deny message escalates to a hard-stop instruction telling the agent to stop, report the blocked operation, and ask you to run it manually or `/approve`. Any approval resets the count; set `0` to disable:
