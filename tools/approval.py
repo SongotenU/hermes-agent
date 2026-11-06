@@ -26,8 +26,8 @@ from tools import approval_context
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
     _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
-    _is_unattended_platform_approval_context, _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
-    get_current_session_key,
+    _is_unattended_platform_approval_context, _presence, _resolve_cli_approval_callback,
+    _should_fall_through_to_cli_approval, get_current_session_key,
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys, detect_dangerous_command,
@@ -1101,39 +1101,25 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     return grant(choice)
 
 
-def _presence(approval_callback=None) -> tuple:
-    """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context.
+def _delegation_policy_block(description: str, pattern_key: str, pattern_keys: list[str]) -> Optional[dict]:
+    """Settle a delegated child's gate from ``delegation.subagent_approval`` before any prompt.
 
-    Single-query ``-q`` and cron clear the presence trio: ``hermes chat -q`` exports
-    HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
-    passes its environ to every external cron worker (#110932) — in neither can a human answer
-    the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
-    pending approval. Unattended *platforms* keep ``is_ask`` only while a client on the session
-    could actually answer: ``/v1/runs`` and streaming chat completions bridge an approval
-    notifier (``approval.request`` → ``POST /v1/runs/{id}/approval``), so on api_server a
-    registered notifier is the discriminator. webhook/msgraph_webhook turns run through the
-    generic TurnRunner lane, which registers a notifier for *every* turn — but those adapters
-    render no approval surface and the inbound lane has no reader, so there ``is_ask`` drops
-    regardless and the unattended branch resolves from ``approvals.unattended_mode`` instead of
-    parking an unanswerable card (#100532)."""
-    approval_callback = _resolve_cli_approval_callback(approval_callback)
-    is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
-    is_ask = env_var_enabled("HERMES_EXEC_ASK")
-    if _is_single_query_approval_context() or _is_cron_approval_context():
-        is_cli = is_gateway = is_ask = False
-    elif is_ask and _is_unattended_platform_approval_context() \
-            and (_gateway_notify_cb(get_current_session_key()) is None
-                 or _get_session_platform() in approval_context._NOTIFIER_BLIND_APPROVAL_PLATFORMS):
-        # start_gateway() sets HERMES_EXEC_ASK process-wide, so an api_server/webhook turn
-        # inside that gateway still reads as "ask" here even though _is_gateway_approval_context()
-        # already excluded the platform. /v1/runs and streaming chat register their notify
-        # callback before the turn runs; a session with none has no surface that can resolve an
-        # approval. webhook/msgraph_webhook are notifier-blind: the generic TurnRunner lane
-        # registers one for every turn while the adapter has no ``send_exec_approval`` and the
-        # POST -> 202 lane has no reader, so a registered callback there answers nothing either
-        # — resolve from approvals.unattended_mode, never a pending no one can answer.
-        is_ask = False
-    return approval_callback, is_cli, is_gateway, is_ask
+    Only subagent-originated gates (an approval-origin label is bound) are affected; a session's
+    own approvals keep the surface's normal flow. ``deny``/``approve`` never notify the user;
+    unset/``inherit`` returns None and the caller proceeds to ``_human_decision``.
+    """
+    origin = approval_context.get_approval_origin()
+    policy = approval_context.subagent_approval_policy() if origin else ""
+    if policy == "approve":
+        logger.info("Delegation policy auto-approved a subagent command (%s): %s", origin, description)
+        return _approved()
+    if policy == "deny":
+        return _denied(
+            "BLOCKED: " + description + " was denied by delegation policy "
+            "(delegation.subagent_approval: deny). Find an alternative approach that avoids this action.",
+            pattern_key=pattern_key, description=description, outcome="denied",
+        )
+    return None
 
 
 def _run_approval_gate(
@@ -1367,6 +1353,9 @@ def check_all_command_guards(command: str, env_type: str,
     if pending is None:
         return _approved_with_provenance(findings, scopes)
     keys, description = pending
+    policy_block = _delegation_policy_block(description, keys[0], keys)
+    if policy_block is not None:
+        return policy_block
     # One combined prompt; a session/always answer persists every key in it.
     return _human_decision(
         _COMMAND_GATE, command=command, description=description,
@@ -1459,6 +1448,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # run independently. The gateway renders the pending payload to Discord/Slack, so the script body is redacted for
     # display; the raw code is what gets assessed and run.
     from agent.redact import redact_approval_display
+    policy_block = _delegation_policy_block(description, pattern_key, [pattern_key])
+    if policy_block is not None:
+        return policy_block
     return _human_decision(
         _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,

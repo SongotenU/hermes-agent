@@ -5,6 +5,7 @@ unattended predicates, and the ``approvals.*`` config readers used by every
 gate in :mod:`tools.approval`.
 """
 
+import contextlib
 import contextvars
 import logging
 import os
@@ -160,6 +161,50 @@ def get_current_session_key(default: str = "default") -> str:
     return get_session_env("HERMES_SESSION_KEY", default)
 
 
+# Subagent attribution: a delegation worker binds a label for the whole child run, so every approval
+# its tools raise can say WHO is asking ("[subagent: <goal>]") in the parent's conversation. Empty
+# outside a delegated child — a session's own approvals are never labelled.
+_approval_origin: contextvars.ContextVar[str] = _ctx("approval_origin", "")
+
+
+def get_approval_origin() -> str:
+    """Label of the agent asking ("subagent: <goal snippet>"), or "" for the session's own turn."""
+    return _approval_origin.get()
+
+
+@contextlib.contextmanager
+def approval_origin(label: str):
+    """Bind the approval-origin label for the current context (delegation child runs)."""
+    token = _approval_origin.set(str(label or "").strip())
+    try:
+        yield
+    finally:
+        _approval_origin.reset(token)
+
+
+_SUBAGENT_APPROVAL_MODES = frozenset({"inherit", "deny", "approve"})
+
+
+def subagent_approval_policy() -> str:
+    """``delegation.subagent_approval``: "" (inherit = per-surface default), "deny", or "approve".
+
+    Read at call time (a config edit applies without restart). An unknown value warns and inherits,
+    so a typo can never silently auto-approve a subagent."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = cfg_get(load_config_readonly(), "delegation", "subagent_approval", default="")
+    except Exception:
+        logger.warning("Could not read delegation.subagent_approval; inheriting the per-surface default", exc_info=True)
+        return ""
+    val = str(raw or "").strip().lower()
+    if val in ("", "inherit"):
+        return ""
+    if val in _SUBAGENT_APPROVAL_MODES:
+        return val
+    logger.warning("delegation.subagent_approval=%r is not one of inherit/deny/approve; using inherit", raw)
+    return ""
+
+
 def _session_env(name: str) -> str:
     """Session-scoped env value, contextvar-first so one cron/-q job cannot taint
     unrelated gateway/API/TUI turns in the same process; process env is the
@@ -270,6 +315,42 @@ def _should_fall_through_to_cli_approval(*, is_cli: bool, approval_callback, not
     listener the ask branch used to return ``pending_approval`` immediately and
     skip the panel the user can actually answer."""
     return bool(is_cli and approval_callback is not None and notify_cb is None)
+
+
+def _presence(approval_callback=None) -> tuple:
+    """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context.
+
+    Single-query ``-q`` and cron clear the presence trio: ``hermes chat -q`` exports
+    HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
+    passes its environ to every external cron worker (#110932) — in neither can a human answer
+    the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
+    pending approval. Unattended *platforms* keep ``is_ask`` only while a client on the session
+    could actually answer: ``/v1/runs`` and streaming chat completions bridge an approval
+    notifier (``approval.request`` → ``POST /v1/runs/{id}/approval``), so on api_server a
+    registered notifier is the discriminator. webhook/msgraph_webhook turns run through the
+    generic TurnRunner lane, which registers a notifier for *every* turn — but those adapters
+    render no approval surface and the inbound lane has no reader, so there ``is_ask`` drops
+    regardless and the unattended branch resolves from ``approvals.unattended_mode`` instead of
+    parking an unanswerable card (#100532)."""
+    from tools.approval import _gateway_notify_cb  # late: approval.py imports this module
+    approval_callback = _resolve_cli_approval_callback(approval_callback)
+    is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
+    is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    if _is_single_query_approval_context() or _is_cron_approval_context():
+        is_cli = is_gateway = is_ask = False
+    elif is_ask and _is_unattended_platform_approval_context() \
+            and (_gateway_notify_cb(get_current_session_key()) is None
+                 or _get_session_platform() in _NOTIFIER_BLIND_APPROVAL_PLATFORMS):
+        # start_gateway() sets HERMES_EXEC_ASK process-wide, so an api_server/webhook turn
+        # inside that gateway still reads as "ask" here even though _is_gateway_approval_context()
+        # already excluded the platform. /v1/runs and streaming chat register their notify
+        # callback before the turn runs; a session with none has no surface that can resolve an
+        # approval. webhook/msgraph_webhook are notifier-blind: the generic TurnRunner lane
+        # registers one for every turn while the adapter has no ``send_exec_approval`` and the
+        # POST -> 202 lane has no reader, so a registered callback there answers nothing either
+        # — resolve from approvals.unattended_mode, never a pending no one can answer.
+        is_ask = False
+    return approval_callback, is_cli, is_gateway, is_ask
 
 
 _VALID_MODES = ("manual", "smart", "off")

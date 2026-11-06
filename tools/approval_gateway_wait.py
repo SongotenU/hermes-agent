@@ -153,6 +153,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     from tools import approval as _approval
     from agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
 
+    # Attribution: a delegated child's gate rides the SAME queue as its parent's turns, so the
+    # card must say who is asking or the user cannot tell a subagent's command from their own.
+    origin = _ctx.get_approval_origin()
+    if origin:
+        approval_data = dict(approval_data)
+        approval_data["description"] = f"[{origin}] {approval_data.get('description') or ''}"
+        approval_data["origin"] = origin
     primary_key = approval_data.get("pattern_key", "")
     if surface == "gateway":
         surface = _ctx.gateway_approval_surface()

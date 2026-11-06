@@ -1369,10 +1369,10 @@ DEFAULT_CONFIG = {
         # Each child re-pays a cold system prompt and re-explores the repo, and one-shot spawns are mostly
         # "review my own work" rather than parallel work (agent/oneshot_footprint.py).
         "oneshot_max_children": 2,
-        # Subagent threads ALWAYS resolve approvals non-interactively (the parent TUI owns stdin;
-        # input() from a worker would deadlock). false = auto-deny, true = auto-approve "once"; both
-        # log a warning audit line. true only for trusted batch work.
+        # Subagent approvals resolve non-interactively (parent TUI owns stdin): false=deny, true=approve
+        # "once"; subagent_approval ("inherit"|"deny"|"approve") overrides on EVERY surface.
         "subagent_auto_approve": False,
+        "subagent_approval": "",
         # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
