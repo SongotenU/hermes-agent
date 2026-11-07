@@ -180,6 +180,12 @@ def prepare_iteration(
     if _pre_api_steer:
         _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
 
+    # DSH-parity in-history system updates: a system-state change that would defer to
+    # the next session rides a NEW system row at the tail on capable routes (cached
+    # prefix untouched). Incapable routes leave the queue for the deferral path.
+    from agent.in_history_system_updates import inject_pending_in_history_updates
+    inject_pending_in_history_updates(agent, messages)
+
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
     if getattr(agent, "run_budget_seconds", None):

@@ -17,6 +17,7 @@ import importlib
 import logging
 import os
 import threading
+import uuid
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
@@ -25,8 +26,8 @@ from tools import approval_context
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
     _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
-    _is_unattended_platform_approval_context, _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
-    get_current_session_key,
+    _is_unattended_platform_approval_context, _presence, _resolve_cli_approval_callback,
+    _should_fall_through_to_cli_approval, get_current_session_key,
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys, detect_dangerous_command,
@@ -300,8 +301,9 @@ def _set_session_yolo(session_key: str, enabled: bool) -> None:
 
 
 def enable_session_yolo(session_key: str) -> None:
-    """Enable YOLO bypass for a single session key."""
-    _set_session_yolo(session_key, True)
+    """Enable YOLO bypass for a single session key (refused under a managed approvals.max_mode cap)."""
+    if approval_context.session_yolo_allowed():
+        _set_session_yolo(session_key, True)
 
 
 def disable_session_yolo(session_key: str) -> None:
@@ -349,8 +351,9 @@ def is_current_session_yolo_enabled() -> bool:
 
 def _yolo_active() -> bool:
     """CLI ``--yolo`` (process-scoped, frozen at import) or gateway ``/yolo``
-    (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    (session-scoped; a managed ``approvals.max_mode`` cap keeps an armed bypass inert).
+    Hardline / deny-rule floors run BEFORE this everywhere."""
+    if _YOLO_MODE_FROZEN or (is_current_session_yolo_enabled() and approval_context.session_yolo_allowed()):
         return True
     from gateway.session_finite import unattended_turn
     return unattended_turn()
@@ -534,6 +537,38 @@ def save_permanent_allowlist(patterns: set):
             governing.update(merged)
     except Exception as e:
         logger.warning("Could not save allowlist: %s", e)
+
+
+# --- Forget standing approvals (oh-my-pi ``/forget-approvals`` parity) ----------------
+
+def forget_all_approval_grants(session_key: str | None = None) -> dict[str, int]:
+    """Revoke BOTH standing-approval tiers for ``session_key`` (default: current).
+
+    Clears this session's grants and every persisted ``always`` pattern — the
+    in-memory governing set AND ``command_allowlist`` in config.yaml, which
+    ``save_permanent_allowlist`` deliberately only ever ADDS to. An explicit
+    user command is the one sanctioned removal path (operator parity: hand-editing
+    the list). Returns the number revoked per tier. YOLO is untouched.
+    """
+    from tools.approval_context import get_current_session_key
+
+    key = session_key or get_current_session_key("default")
+    with _lock:
+        session_removed = len(_session_approved.pop(key, set()) or set())
+        permanent = _permanent_set()
+        permanent_removed = len(permanent)
+        permanent.clear()
+        _permanent_baseline_by_home[_baseline_key()] = set()
+    if permanent_removed:
+        try:
+            from hermes_cli.config import load_config, save_config
+            config = load_config()
+            if config.get("command_allowlist"):
+                config["command_allowlist"] = []
+                save_config(config)
+        except Exception:  # config layer must not make the revoke fail; traceback for the log
+            logger.exception("forget-approvals: could not rewrite command_allowlist")
+    return {"session": session_removed, "permanent": permanent_removed}
 
 
 # --- Bypass check (yolo / mode=off) ---------------------------------------------------------------------------------
@@ -873,6 +908,52 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     }, True
 
 
+class _ApprovalAudit:
+    """Durable asked/decided pair for one human approval gate (state.db ``approval_events``).
+
+    One fresh ``request_id`` pairs the events; turn/tool-call/session ids come from the
+    approval observability context at write time. Best-effort — a failed append never
+    blocks or alters the decision (audit is observability; the gate is safety-critical).
+    Pending-queue asks (deferred /approve review) are not audited: their decision arrives
+    on a later turn with no frame here to pair with. See ``hermes_state_approvals``.
+    """
+
+    def __init__(self, *, description: str, pattern_key: str) -> None:
+        self.request_id = uuid.uuid4().hex
+        self.description = description
+        self.pattern_key = pattern_key
+        self._asked = False
+        self._decided = False
+
+    def asked(self, surface: str) -> None:
+        """Record the ask once, at the point a human-facing prompt is about to happen."""
+        if self._asked:
+            return
+        self._asked = True
+        self._write(event="asked", surface=surface)
+
+    def decided(self, outcome: str, choice: str = "") -> None:
+        """Record the decision once (grants and denials both flow through here)."""
+        if self._decided:
+            return
+        self._decided = True
+        self._write(event="decided", outcome=outcome, choice=choice)
+
+    def _write(self, *, event: str, surface: str = "", outcome: str = "", choice: str = "") -> None:
+        try:
+            from hermes_state_approvals import record_approval_event
+
+            obs = approval_context.get_observability_context()
+            record_approval_event(
+                session_id=obs["session_id"], request_id=self.request_id, event=event,
+                outcome=outcome or None, choice=choice or None, surface=surface,
+                pattern_key=self.pattern_key, turn_id=obs["turn_id"],
+                tool_call_id=obs["tool_call_id"], detail=self.description,
+            )
+        except Exception:
+            logger.debug("Approval audit write failed (event=%s)", event, exc_info=True)
+
+
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
@@ -893,6 +974,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             return result
     pending_body = pending_body() if pending_body else None
     allow_permanent = not smart_denied
+    audit = _ApprovalAudit(description=description, pattern_key=pattern_key)
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -900,14 +982,17 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             breaker = _denial_breaker_addendum(session_key)
         deny_reason = fmt.pop("deny_reason", None)
         extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
-        return _denied(template.format(description=description, breaker=breaker, **fmt),
-                       pattern_key=pattern_key, description=description,
-                       outcome=outcome, noun=spec.noun, **extra)
+        result = _denied(template.format(description=description, breaker=breaker, **fmt),
+                         pattern_key=pattern_key, description=description,
+                         outcome=outcome, noun=spec.noun, **extra)
+        audit.decided(outcome)
+        return result
 
     def grant(choice: str) -> dict:
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, pattern_keys)
+        audit.decided("approved", choice)
         if spec.user_approved:
             return _user_approved(session_key, description)
         return _approved()
@@ -920,8 +1005,11 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
         if denied is not None:
+            audit.asked("transport")
+            audit.decided(str(denied.get("outcome") or "denied"))
             return denied
         if choice is not None:
+            audit.asked("transport")
             if choice == "deny":
                 _record_denial(session_key)
                 return deny(spec.transport_denied, "denied")
@@ -930,8 +1018,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     # Gateway/async approval: block the agent thread until /approve or /deny, mirroring the CLI's synchronous input()
     # flow. The agent never sees "approval_required" here — it gets output or a definitive BLOCKED.
     if is_gateway or is_ask:
-        # Redacted copies for user-visible rendering only (the gateway paints them into Discord/Slack); the raw
-        # command still executes after approval and persistence keys off pattern_key.
+        # Redacted copies for user-visible rendering only; the raw command still executes after approval.
         display_command = redact_approval_display(command)
         display_description = redact_approval_display(description)
         notify_cb = _gateway_notify_cb(session_key)
@@ -946,8 +1033,10 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             }
             if smart_denied:
                 data["smart_denied"] = True
+            audit.asked("gateway" if is_gateway else "ask")
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
             if decision.get("notify_failed"):
+                audit.decided("notify_failed")
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
                                description=description, outcome="notify_failed", noun=spec.noun)
             # Consent contract: silence is NOT consent, and an explicit deny is a hard
@@ -978,6 +1067,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         ):
             if not spec.pending_keys:
                 display_command, display_description = command, description
+            # Not audited: the pending queue defers the ask to a later /approve turn with no
+            # decision frame here to pair with (see _ApprovalAudit).
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
                 pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
@@ -990,6 +1081,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         prompt_description = redact_approval_display(description)
     hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
+    audit.asked("cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
                                        smart_denied=smart_denied, approval_callback=approval_callback)
@@ -1010,39 +1102,25 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     return grant(choice)
 
 
-def _presence(approval_callback=None) -> tuple:
-    """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context.
+def _delegation_policy_block(description: str, pattern_key: str, pattern_keys: list[str]) -> Optional[dict]:
+    """Settle a delegated child's gate from ``delegation.subagent_approval`` before any prompt.
 
-    Single-query ``-q`` and cron clear the presence trio: ``hermes chat -q`` exports
-    HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
-    passes its environ to every external cron worker (#110932) — in neither can a human answer
-    the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
-    pending approval. Unattended *platforms* keep ``is_ask`` only while a client on the session
-    could actually answer: ``/v1/runs`` and streaming chat completions bridge an approval
-    notifier (``approval.request`` → ``POST /v1/runs/{id}/approval``), so on api_server a
-    registered notifier is the discriminator. webhook/msgraph_webhook turns run through the
-    generic TurnRunner lane, which registers a notifier for *every* turn — but those adapters
-    render no approval surface and the inbound lane has no reader, so there ``is_ask`` drops
-    regardless and the unattended branch resolves from ``approvals.unattended_mode`` instead of
-    parking an unanswerable card (#100532)."""
-    approval_callback = _resolve_cli_approval_callback(approval_callback)
-    is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
-    is_ask = env_var_enabled("HERMES_EXEC_ASK")
-    if _is_single_query_approval_context() or _is_cron_approval_context():
-        is_cli = is_gateway = is_ask = False
-    elif is_ask and _is_unattended_platform_approval_context() \
-            and (_gateway_notify_cb(get_current_session_key()) is None
-                 or _get_session_platform() in approval_context._NOTIFIER_BLIND_APPROVAL_PLATFORMS):
-        # start_gateway() sets HERMES_EXEC_ASK process-wide, so an api_server/webhook turn
-        # inside that gateway still reads as "ask" here even though _is_gateway_approval_context()
-        # already excluded the platform. /v1/runs and streaming chat register their notify
-        # callback before the turn runs; a session with none has no surface that can resolve an
-        # approval. webhook/msgraph_webhook are notifier-blind: the generic TurnRunner lane
-        # registers one for every turn while the adapter has no ``send_exec_approval`` and the
-        # POST -> 202 lane has no reader, so a registered callback there answers nothing either
-        # — resolve from approvals.unattended_mode, never a pending no one can answer.
-        is_ask = False
-    return approval_callback, is_cli, is_gateway, is_ask
+    Only subagent-originated gates (an approval-origin label is bound) are affected; a session's
+    own approvals keep the surface's normal flow. ``deny``/``approve`` never notify the user;
+    unset/``inherit`` returns None and the caller proceeds to ``_human_decision``.
+    """
+    origin = approval_context.get_approval_origin()
+    policy = approval_context.subagent_approval_policy() if origin else ""
+    if policy == "approve":
+        logger.info("Delegation policy auto-approved a subagent command (%s): %s", origin, description)
+        return _approved()
+    if policy == "deny":
+        return _denied(
+            "BLOCKED: " + description + " was denied by delegation policy "
+            "(delegation.subagent_approval: deny). Find an alternative approach that avoids this action.",
+            pattern_key=pattern_key, description=description, outcome="denied",
+        )
+    return None
 
 
 def _run_approval_gate(
@@ -1276,6 +1354,9 @@ def check_all_command_guards(command: str, env_type: str,
     if pending is None:
         return _approved_with_provenance(findings, scopes)
     keys, description = pending
+    policy_block = _delegation_policy_block(description, keys[0], keys)
+    if policy_block is not None:
+        return policy_block
     # One combined prompt; a session/always answer persists every key in it.
     return _human_decision(
         _COMMAND_GATE, command=command, description=description,
@@ -1368,6 +1449,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # run independently. The gateway renders the pending payload to Discord/Slack, so the script body is redacted for
     # display; the raw code is what gets assessed and run.
     from agent.redact import redact_approval_display
+    policy_block = _delegation_policy_block(description, pattern_key, [pattern_key])
+    if policy_block is not None:
+        return policy_block
     return _human_decision(
         _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,

@@ -26,6 +26,15 @@ from tools.delegate_tool_results import (
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+
+def _subagent_origin_label(goal: str) -> str:
+    """One-line attribution label for approval cards raised by this child's tools."""
+    snippet = " ".join(str(goal or "").split())
+    if len(snippet) > 48:
+        snippet = snippet[:47].rstrip() + "…"
+    return f"subagent: {snippet}" if snippet else "subagent"
+
+
 def _reserve_child_transcript(child: Any) -> None:
     """Make a queued child readable without completing its first-turn persistence."""
     from agent.runtime_session_store import RuntimeSessionStore
@@ -931,8 +940,12 @@ class _ChildRun:
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
             from tools.delegate_tool_routes import child_profile_scope
+            from tools import approval_context as _approval_ctx
             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
-            with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            # The approval-origin label rides the whole child run so every approval its tools raise names
+            # the asking subagent in the parent's conversation.
+            with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")), \
+                    _approval_ctx.approval_origin(_subagent_origin_label(self.goal)):
                 return child.run_conversation(
                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )

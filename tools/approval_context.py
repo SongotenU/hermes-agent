@@ -5,9 +5,11 @@ unattended predicates, and the ``approvals.*`` config readers used by every
 gate in :mod:`tools.approval`.
 """
 
+import contextlib
 import contextvars
 import logging
 import os
+from typing import Optional
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
@@ -63,10 +65,11 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     except Exception:
         return  # plugin system unavailable (bare tool-only imports, minimal tests)
     try:
-        kwargs.setdefault("turn_id", _approval_turn_id.get())
-        kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
-        if _approval_session_id.get():
-            kwargs.setdefault("session_id", _approval_session_id.get())
+        obs = get_observability_context()
+        kwargs.setdefault("turn_id", obs["turn_id"])
+        kwargs.setdefault("tool_call_id", obs["tool_call_id"])
+        if obs["session_id"]:
+            kwargs.setdefault("session_id", obs["session_id"])
         invoke_hook(hook_name, **kwargs)
     except Exception as exc:
         # invoke_hook() swallows per-callback errors; this is the dispatch layer itself failing.
@@ -113,6 +116,17 @@ def is_viewer_turn_with_approver() -> bool:
         return any("session:approve" in member.capabilities for member in live.subscribers.values())
 
 
+
+def get_observability_context() -> dict:
+    """Correlation ids currently bound for approval hooks/audit:
+    ``{"session_id", "turn_id", "tool_call_id"}`` (empty strings when unbound)."""
+    return {
+        "session_id": _approval_session_id.get() or "",
+        "turn_id": _approval_turn_id.get() or "",
+        "tool_call_id": _approval_tool_call_id.get() or "",
+    }
+
+
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
     return _approval_session_key.set(session_key or "")
@@ -146,6 +160,50 @@ def get_current_session_key(default: str = "default") -> str:
         return session_key
     from gateway.session_context import get_session_env
     return get_session_env("HERMES_SESSION_KEY", default)
+
+
+# Subagent attribution: a delegation worker binds a label for the whole child run, so every approval
+# its tools raise can say WHO is asking ("[subagent: <goal>]") in the parent's conversation. Empty
+# outside a delegated child — a session's own approvals are never labelled.
+_approval_origin: contextvars.ContextVar[str] = _ctx("approval_origin", "")
+
+
+def get_approval_origin() -> str:
+    """Label of the agent asking ("subagent: <goal snippet>"), or "" for the session's own turn."""
+    return _approval_origin.get()
+
+
+@contextlib.contextmanager
+def approval_origin(label: str):
+    """Bind the approval-origin label for the current context (delegation child runs)."""
+    token = _approval_origin.set(str(label or "").strip())
+    try:
+        yield
+    finally:
+        _approval_origin.reset(token)
+
+
+_SUBAGENT_APPROVAL_MODES = frozenset({"inherit", "deny", "approve"})
+
+
+def subagent_approval_policy() -> str:
+    """``delegation.subagent_approval``: "" (inherit = per-surface default), "deny", or "approve".
+
+    Read at call time (a config edit applies without restart). An unknown value warns and inherits,
+    so a typo can never silently auto-approve a subagent."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = cfg_get(load_config_readonly(), "delegation", "subagent_approval", default="")
+    except Exception:
+        logger.warning("Could not read delegation.subagent_approval; inheriting the per-surface default", exc_info=True)
+        return ""
+    val = str(raw or "").strip().lower()
+    if val in ("", "inherit"):
+        return ""
+    if val in _SUBAGENT_APPROVAL_MODES:
+        return val
+    logger.warning("delegation.subagent_approval=%r is not one of inherit/deny/approve; using inherit", raw)
+    return ""
 
 
 def _session_env(name: str) -> str:
@@ -260,6 +318,42 @@ def _should_fall_through_to_cli_approval(*, is_cli: bool, approval_callback, not
     return bool(is_cli and approval_callback is not None and notify_cb is None)
 
 
+def _presence(approval_callback=None) -> tuple:
+    """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context.
+
+    Single-query ``-q`` and cron clear the presence trio: ``hermes chat -q`` exports
+    HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
+    passes its environ to every external cron worker (#110932) — in neither can a human answer
+    the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
+    pending approval. Unattended *platforms* keep ``is_ask`` only while a client on the session
+    could actually answer: ``/v1/runs`` and streaming chat completions bridge an approval
+    notifier (``approval.request`` → ``POST /v1/runs/{id}/approval``), so on api_server a
+    registered notifier is the discriminator. webhook/msgraph_webhook turns run through the
+    generic TurnRunner lane, which registers a notifier for *every* turn — but those adapters
+    render no approval surface and the inbound lane has no reader, so there ``is_ask`` drops
+    regardless and the unattended branch resolves from ``approvals.unattended_mode`` instead of
+    parking an unanswerable card (#100532)."""
+    from tools.approval import _gateway_notify_cb  # late: approval.py imports this module
+    approval_callback = _resolve_cli_approval_callback(approval_callback)
+    is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
+    is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    if _is_single_query_approval_context() or _is_cron_approval_context():
+        is_cli = is_gateway = is_ask = False
+    elif is_ask and _is_unattended_platform_approval_context() \
+            and (_gateway_notify_cb(get_current_session_key()) is None
+                 or _get_session_platform() in _NOTIFIER_BLIND_APPROVAL_PLATFORMS):
+        # start_gateway() sets HERMES_EXEC_ASK process-wide, so an api_server/webhook turn
+        # inside that gateway still reads as "ask" here even though _is_gateway_approval_context()
+        # already excluded the platform. /v1/runs and streaming chat register their notify
+        # callback before the turn runs; a session with none has no surface that can resolve an
+        # approval. webhook/msgraph_webhook are notifier-blind: the generic TurnRunner lane
+        # registers one for every turn while the adapter has no ``send_exec_approval`` and the
+        # POST -> 202 lane has no reader, so a registered callback there answers nothing either
+        # — resolve from approvals.unattended_mode, never a pending no one can answer.
+        is_ask = False
+    return approval_callback, is_cli, is_gateway, is_ask
+
+
 _VALID_MODES = ("manual", "smart", "off")
 
 
@@ -291,15 +385,61 @@ def _get_approval_config() -> dict:
         return {}
 
 
+# Approval-mode ladder, most relaxed → most restrictive. ``off`` auto-approves, ``smart`` lets the
+# guardian model decide, ``manual`` asks the human. Ported from T3 Code's permission modes capped by
+# managed policy (pin 6577c6b61851): the LADDER lives here so the clamp is one function.
+_APPROVAL_MODE_LADDER = ("off", "smart", "manual")
+
+
+def _managed_approvals_cap() -> Optional[str]:
+    """``approvals.max_mode`` from the MANAGED scope only: the most relaxed mode anyone may use.
+
+    Read from the managed layer, never the user's config — a cap the subject can edit is not a cap.
+    ``None`` when unset or when no managed scope exists (both mean: no cap, today's behaviour).
+    An unrecognized value caps at ``manual`` (fail-closed: a typo can never unlock).
+    """
+    try:
+        from hermes_cli.managed_scope import load_managed_config
+        raw = cfg_get(load_managed_config(), "approvals", "max_mode", default="")
+    except Exception:
+        logger.warning("Could not read the managed approvals.max_mode; leaving approvals uncapped", exc_info=True)
+        return None
+    val = str(raw or "").strip().lower()
+    if not val:
+        return None
+    if val in _APPROVAL_MODE_LADDER:
+        return val
+    logger.warning("Managed approvals.max_mode=%r is not one of off/smart/manual; capping at manual", raw)
+    return "manual"
+
+
+def _clamp_approval_mode(mode: str) -> str:
+    """Return *mode* unless the managed cap allows less: the effective mode is the stricter of the two."""
+    cap = _managed_approvals_cap()
+    if cap is None:
+        return mode
+    clamped = _APPROVAL_MODE_LADDER[max(_APPROVAL_MODE_LADDER.index(mode), _APPROVAL_MODE_LADDER.index(cap))]
+    if clamped != mode:
+        logger.info("approvals.max_mode=%s from the managed policy overrides the configured mode %s", cap, mode)
+    return clamped
+
+
+def session_yolo_allowed() -> bool:
+    """YOLO bypasses every approval, so it is more relaxed than ``off``: a managed cap of anything
+    but ``off`` forbids it. No cap → allowed (today's behaviour)."""
+    return _managed_approvals_cap() in (None, "off")
+
+
 def _get_approval_mode() -> str:
-    """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config)."""
+    """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config; a managed
+    ``approvals.max_mode`` cap clamps the answer to the most restrictive mode it allows)."""
     try:
         from gateway.hosted_room_execution_policy import current_room_execution_policy
         if (room_policy := current_room_execution_policy()) is not None:
-            return room_policy.approval_mode
+            return _clamp_approval_mode(room_policy.approval_mode)
     except Exception:
         pass
-    return _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
+    return _clamp_approval_mode(_normalize_approval_mode(_get_approval_config().get("mode", "manual")))
 
 
 def _get_approval_timeout() -> int:
