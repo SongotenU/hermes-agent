@@ -124,6 +124,22 @@ Delivery follows the same routing as user-attached images (`agent.image_input_mo
 
 Forwarding is best-effort: unreadable paths are skipped with a log line, and any failure in the image plumbing falls back to the plain text goal — it can never break a spawn. Images are for things the child must *see*; put text file paths in `context` as usual.
 
+## Subagent approvals
+
+Dangerous commands a subagent tries follow `delegation.subagent_approval`:
+
+- `inherit` (default): the surface decides. On gateway, TUI and desktop sessions the approval card
+  is posted into the **parent conversation** and names the asking subagent (`[subagent: <goal>]`);
+  answering it there (`/approve`, `/deny`, or the card buttons) unblocks the child. Interactive CLI
+  subagent threads stay non-interactive (`delegation.subagent_auto_approve`: false = deny,
+  true = approve "once") — the parent TUI owns stdin, so a child can never prompt it directly.
+- `deny`: never prompt, always deny (quiet fleet/batch work).
+- `approve`: never prompt, always allow — trusted batch work only.
+
+Silence is never consent: an unanswered card times out as a deny, and a card withdrawn because the
+parent turn ended reports `cancelled`, not a user refusal. The policy reads at call time, so
+`hermes config set delegation.subagent_approval deny` applies without a restart.
+
 ## Practical Examples
 
 ### Parallel Research
