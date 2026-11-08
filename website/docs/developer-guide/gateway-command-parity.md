@@ -60,6 +60,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/fast` | control | HermesCLI._handle_fast_command | config.get, config.set | unavailable: advanced | slash.exec | per-session setting (gateway handler) |
 | `/focus` | refused | HermesCLI._handle_focus_command | local (preference not saved) | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
 | `/footer` | control | HermesCLI._handle_footer_command | slash.exec | unavailable: terminal | slash.exec | per-session setting (gateway handler) |
+| `/forget-approvals` | refused | HermesCLI._handle_forget_approvals_command | slash.exec: refused | slash.exec: refused | slash.exec: refused |  |
 | `/goal` | control | HermesCLI._handle_goal_command | slash.exec | slash.exec | slash.exec |  |
 | `/handoff` | refused | HermesCLI._handle_handoff_command | slash.exec: refused | action: handoff | slash.exec: refused | client-local (cli_only) |
 | `/hatch` (/generate-pet) | refused | HermesCLI._handle_hatch_command | slash.exec: refused | action: hatch | slash.exec: refused | client-local (cli_only) |
