@@ -40,6 +40,12 @@ that Codex auth is missing.
 
 ## One-Shot Tasks
 
+Codex never sees the Hermes conversation — the prompt IS the handoff artifact. Include: goal +
+hard constraints, decisions made, files touched (paths, not diffs), commands/tests run and their
+verdicts, open failures, pending questions. On follow-ups in the same workdir send only the delta
+since the last handoff; never paste the Hermes transcript. Contract:
+`website/docs/developer-guide/context-handoff.md`.
+
 ```
 terminal(command="codex exec 'Add dark mode toggle to settings'", workdir="~/project", pty=true)
 ```

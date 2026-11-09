@@ -548,6 +548,11 @@ _LOCAL_SERVER_ALIASES = {
 
 _ALIAS_TABLES: dict[str, tuple[int, dict[str, str]]] = {}  # home key -> (registry generation, table)
 
+# Of those aliases only llama.cpp is a runtime Hermes supervises itself, so its live endpoint (port
+# included) can be read from the supervisor state file; ollama/vLLM are servers the user runs and
+# keep needing their own base_url.
+_MANAGED_LOCAL_VISION_PROVIDERS = frozenset({"llamacpp", "llama.cpp", "llama-cpp"})
+
 
 def _provider_alias_table() -> dict[str, str]:
     """The alias table the main provider path resolves against (hermes_cli.auth), per home and registry
@@ -2544,6 +2549,9 @@ _RUNTIME_MAIN_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
 _RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_relay_call", default=None)
 )
+from agent.auxiliary_relay_call import (
+    _complete_relay_auxiliary_call, _fail_relay_auxiliary_call, _note_relay_auxiliary_error,
+)
 
 
 @contextlib.contextmanager
@@ -2650,6 +2658,41 @@ def _provider_callback_async(create: Callable[[dict[str, Any]], Any], judged: li
     return call
 
 
+def _breaker_guard_owner(relay_context: dict, provider: str) -> bool:
+    """True for the first relay leg of a logical auxiliary call on ``provider``.
+
+    The breaker's job is to stop the NEXT logical call from hammering a dead provider, not to
+    refuse the fallback legs of the call whose own attempts just tripped it: guarding once per
+    (logical call, provider) keeps every planned attempt reaching the provider.
+    """
+    guarded = relay_context.setdefault("breaker_guarded_providers", set())
+    if provider in guarded:
+        return False
+    guarded.add(provider)
+    return True
+
+
+def _aux_attempt_failure_reason(exc: BaseException) -> str:
+    """The ladder's own verdict for a failed attempt, without a second classification pass.
+
+    ``_ClassifiedAttempt`` carries the failure it was classified with and a pool-rebuilt error
+    carries the provider's verdict; anything else is reported as ``unknown`` rather than classified
+    a second time, because the plugin error-classification hook must see one call per failed request.
+    """
+    failure = getattr(exc, "failure", None)
+    verdict = getattr(failure, "verdict", None)
+    if verdict is not None:
+        return verdict.reason.value
+    from agent import auxiliary_call_outcome
+
+    embedded = getattr(exc, auxiliary_call_outcome.PROVIDER_ERROR_ATTR, None)
+    if isinstance(embedded, dict) and embedded.get("reason"):
+        return str(embedded["reason"])
+    # Never classify here: the plugin error-classification hook must see exactly one call per
+    # failed request, and an unclassified failure is not evidence of provider unreliability.
+    return "unknown"
+
+
 def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
@@ -2675,22 +2718,25 @@ def _relay_sync_completion(
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     from agent.auxiliary_hooks import run_with_aux_hooks
+    from agent.sliding_window_breaker import aux_breaker_scope
     model_name = str(kwargs.get("model") or fallback_model)
-    try:
-        return run_with_aux_hooks(
-            lambda: relay_llm.execute_current(
-                kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
-                name=provider_name, model_name=model_name, metadata=relay_chat_metadata(metadata),
-                defer_logical_completion=True,
-            ),
-            aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
-            provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
-        )
-    except Exception as exc:
-        if judged:  # classified where it failed: recorded there, and Relay and the hooks saw the provider's error
-            raise judged[-1]
-        _note_relay_auxiliary_error(exc)
-        raise
+    with aux_breaker_scope(provider_name, reason_of=_aux_attempt_failure_reason,
+                           guard=_breaker_guard_owner(relay_context, provider_name or "")):
+        try:
+            return run_with_aux_hooks(
+                lambda: relay_llm.execute_current(
+                    kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
+                    name=provider_name, model_name=model_name, metadata=relay_chat_metadata(metadata),
+                    defer_logical_completion=True,
+                ),
+                aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+                provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
+            )
+        except Exception as exc:
+            if judged:  # classified where it failed: recorded there, and Relay and the hooks saw the provider's error
+                raise judged[-1]
+            _note_relay_auxiliary_error(exc)
+            raise
 
 
 async def _relay_async_completion(
@@ -2699,6 +2745,7 @@ async def _relay_async_completion(
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
+    relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
     judged: list[_ClassifiedAttempt] = []
@@ -2710,21 +2757,24 @@ async def _relay_async_completion(
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     from agent.auxiliary_hooks import arun_with_aux_hooks
+    from agent.sliding_window_breaker import aux_breaker_scope
     model_name = str(kwargs.get("model") or fallback_model)
-    try:
-        return await arun_with_aux_hooks(
-            lambda: relay_llm.execute_current_async(
-                kwargs, callback, name=provider_name, model_name=model_name,
-                metadata=relay_chat_metadata(metadata), defer_logical_completion=True,
-            ),
-            aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
-            provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
-        )
-    except Exception as exc:
-        if judged:
-            raise judged[-1]
-        _note_relay_auxiliary_error(exc)
-        raise
+    with aux_breaker_scope(provider_name, reason_of=_aux_attempt_failure_reason,
+                           guard=_breaker_guard_owner(relay_context, provider_name or "")):
+        try:
+            return await arun_with_aux_hooks(
+                lambda: relay_llm.execute_current_async(
+                    kwargs, callback, name=provider_name, model_name=model_name,
+                    metadata=relay_chat_metadata(metadata), defer_logical_completion=True,
+                ),
+                aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+                provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
+            )
+        except Exception as exc:
+            if judged:
+                raise judged[-1]
+            _note_relay_auxiliary_error(exc)
+            raise
 
 
 def _relay_sync_stream(
@@ -5533,7 +5583,16 @@ def resolve_vision_provider_client(
         "vision", provider, model, base_url, api_key
     )
     # The raw name keeps a llama.cpp alias distinguishable from bare ``custom`` for the last resolve.
-    raw_requested, requested = requested, _normalize_vision_provider(requested)
+    raw_requested = requested
+    # A managed local runtime is addressed by its LIVE endpoint: the stable port moves to an
+    # ephemeral one whenever something else holds it, and a base_url left in config then 404s.
+    # Resolved before normalization, because the managed-provider set matches the requested name.
+    if (requested or "").strip().lower() in _MANAGED_LOCAL_VISION_PROVIDERS and not resolved_base_url:
+        managed_base, managed_key = managed_local_endpoint()
+        if managed_base:
+            resolved_base_url = managed_base
+            resolved_api_key = resolved_api_key or managed_key
+    requested = _normalize_vision_provider(requested)
     if resolved_base_url:
         provider_for_base_override = requested if requested and requested not in {"", "auto"} else "custom"
         client, final_model = resolve_provider_client(
@@ -6856,6 +6915,68 @@ def _client_streams_internally(client: Any) -> bool:
     """Adapters that stream inside .create() tick the hook themselves (Codex, Anthropic) or
     cannot stream (Bedrock); none accept ``stream=True`` from us."""
     return isinstance(client, (CodexAuxiliaryClient, AnthropicAuxiliaryClient, BedrockAuxiliaryClient))
+
+
+# Fork feature kept; upstream side empty at this merge point (no HEAD counterpart).
+_MANAGED_LOCAL_STATE_TTL_S = 15.0
+_managed_local_cache: tuple[float, str] = (0.0, "")
+
+
+def _managed_local_netloc() -> str:
+    """host:port of the managed local llama-server ("" when none), read with a short TTL from
+    the supervisor state file provider resolution also uses (exact match)."""
+    global _managed_local_cache
+    now = time.monotonic()
+    ts, cached = _managed_local_cache
+    if now - ts < _MANAGED_LOCAL_STATE_TTL_S:
+        return cached
+    try:
+        from hermes_cli.local_runtime.supervisor import state_path
+
+        raw = state_path().read_text(encoding="utf-8-sig")
+        base = str((json.loads(raw) or {}).get("base_url", ""))
+        netloc = urlparse(base).netloc.lower()
+    except Exception:
+        netloc = ""
+    _managed_local_cache = (now, netloc)
+    return netloc
+
+
+def _is_managed_local_endpoint(base_url: Optional[str]) -> bool:
+    """True when *base_url* targets the llama-server this Hermes manages."""
+    if not base_url:
+        return False
+    managed = _managed_local_netloc()
+    if not managed:
+        return False
+    try:
+        return urlparse(str(base_url)).netloc.lower() == managed
+    except Exception:
+        return False
+
+
+def managed_local_endpoint() -> "tuple[str, str]":
+    """``(base_url, api_key)`` of the live managed llama-server, or ``("", "")``.
+
+    The stable port moves to an ephemeral one whenever something else holds it, so a base_url
+    pasted into config outlives its server and strands the task on a 404. Resolving from the same
+    supervisor state file provider resolution uses keeps vision on the live endpoint."""
+    try:
+        from hermes_cli.local_runtime.supervisor import state_path
+
+        state = json.loads(state_path().read_text(encoding="utf-8-sig")) or {}
+        base = str(state.get("base_url", "")).rstrip("/")
+        if not base:
+            return ("", "")
+        pid = int(state.get("pid") or 0)
+        if pid > 0:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return ("", "")
+        return base, str(state.get("api_key", ""))
+    except Exception:
+        return ("", "")
 
 
 def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
