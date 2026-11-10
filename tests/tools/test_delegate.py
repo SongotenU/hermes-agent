@@ -10,6 +10,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 """
 
 import json
+import os
 import threading
 import time
 import types
@@ -321,8 +322,12 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
+                # The shared registry resolves paths (acquire() normalizes via
+                # pathlib.resolve()), which on macOS turns /var -> /private/var
+                # symlink paths. Both point at the same file; compare resolved.
                 self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
+                    os.path.realpath(str(child_db.db_path)),
+                    os.path.realpath(str(parent_db.db_path)),
                 )
             finally:
                 if child_db is not None:
