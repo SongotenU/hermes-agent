@@ -948,6 +948,34 @@ cron:
 
 Set `cleanup_timeout_seconds: 0` only to restore the legacy unbounded cleanup behavior.
 
+## Per-run token budget
+
+A hard cap on tokens a job may burn in ONE fire (prompt + completion, cumulative across the run's API calls; a resumed session's preloaded counters do not count). A run that crosses the cap is hard-interrupted and recorded as **failed** with a token-budget notice naming the cap — the same scheduler-side ladder as the inactivity watchdog, so it is never blamed on the model service and never retried on its own.
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  max_tokens_per_run: 300000   # 0 = no cap (default)
+```
+
+Or set `HERMES_CRON_MAX_TOKENS`. The resolution order is: env var → config.yaml → no cap. This is the runaway-cost backstop for agent fleets: a looping job is stopped at the cap instead of quietly eating the day's budget.
+
+## Routine gate (skip when busy / too soon)
+
+Two opt-in guards stop routines from stacking or hammering. A refused occurrence is **consumed**, not queued — the tick already advanced the schedule (at-most-once semantics are untouched), the skip is logged, and the run's execution receipt is settled as failed with the gate reason.
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  skip_when_busy: true        # skip a due run while this profile already has a cron run in flight
+  min_interval_seconds: 1800  # a recurring job may not fire again within 30 minutes of its last run
+```
+
+- **`skip_when_busy`** — the profile's cron runs become effectively serial: while any run is in flight, later due occurrences are skipped instead of queued. Delegated work and chat turns are never gated, only cron fires.
+- **`min_interval_seconds`** — guards hand-made `*/5`-style routines against themselves. One-shot jobs are never interval-gated.
+
+Env overrides: `HERMES_CRON_SKIP_WHEN_BUSY` (`1`/`true`/`yes`/`on`) and `HERMES_CRON_MIN_INTERVAL`. Both default off (`false` / `0`).
+
 ## Media send timeout
 
 When a cron delivery includes media attachments (a generated PDF, TTS audio, an exported report) sent through a live gateway adapter, each attachment upload is bounded by a timeout — 300 seconds by default. Large files on slow uplinks can need more:

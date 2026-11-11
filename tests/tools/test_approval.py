@@ -1995,7 +1995,8 @@ class TestApprovalPromptRedaction:
         )
         cfg = {"approvals": {"mode": "manual"}}
         with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
-            with _patch("tools.approval._is_gateway_approval_context",
+            # `_presence` lives in tools.approval_context now, and that is the module production reads.
+            with _patch("tools.approval_context._is_gateway_approval_context",
                         return_value=True):
                 with _patch("tools.approval_context._get_approval_mode",
                             return_value="manual"):

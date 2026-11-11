@@ -38,6 +38,11 @@ just test tests/agent/test_foo.py -k test_x             # same runner; refuses t
   wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races. A new
   non-zero `time.sleep`/`asyncio.sleep` in a test fails the ratchet (HX013): wait on an Event or
   poll with `tests.waiting.wait_until` / `async_wait_until`.
+- **A quarantine needs an owner.** `@pytest.mark.skip` / `pytest.skip()` / `xfail` without a
+  condition that resolves itself carries a tracking line directly above it —
+  `# quarantine: #<issue> <why this is skipped>` — and the issue says what unblocks it. An
+  unreasoned skip hides a broken surface forever and is rejected in review; deleting the skip is
+  the fix, not widening it.
 - **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
   `tests/agent/`, `tests/hermes_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
   under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,
