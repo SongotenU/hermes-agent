@@ -402,6 +402,33 @@ def test_llm_candidate_list_omits_bundled_and_disabled_skills(
     assert "disabled-fixture" not in listing
 
 
+def test_llm_candidate_list_omits_model_hidden_skills(curator_env):
+    """``model_invocable: false`` skills are excluded from the LLM pass.
+
+    ``skill_view`` refuses model-initiated reads of them (the fork's only read
+    path), so listing one loops the fork on refusals until the same-tool-failure
+    halt. The deterministic aging pass must still see it.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "agent-fixture")
+    hidden_dir = skills_dir / "user-only-fixture"
+    hidden_dir.mkdir(parents=True, exist_ok=True)
+    (hidden_dir / "SKILL.md").write_text(
+        "---\nname: user-only-fixture\ndescription: x\nmodel_invocable: false\n---\n",
+        encoding="utf-8",
+    )
+    u.mark_agent_created("user-only-fixture")
+    u.mark_agent_created("agent-fixture")
+
+    assert "user-only-fixture" in set(u.list_agent_created_skill_names())
+
+    listing = c._render_candidate_list()
+    assert "agent-fixture" in listing
+    assert "user-only-fixture" not in listing
+
+
 def test_llm_prompt_does_not_invite_bundled_writes_when_prune_builtins_on(
     curator_env, monkeypatch,
 ):
