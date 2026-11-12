@@ -32,6 +32,22 @@ def _fresh_structured_output_memo(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_auxiliary_breaker(monkeypatch):
+    """The auxiliary sliding-window breaker is process-global (fork feature): five failing aux
+    attempts on one provider inside the window open it for every later call, so one test's
+    intentional provider errors would make the next test's attempt fail fast with
+    AuxiliaryBreakerOpen instead of reaching the provider. Reset the registry per test."""
+    try:
+        from agent import sliding_window_breaker
+    except ImportError:  # upstream-only checkout: the fork module is absent
+        yield
+        return
+    sliding_window_breaker.reset_breakers()
+    yield
+    sliding_window_breaker.reset_breakers()
+
+
+@pytest.fixture(autouse=True)
 def _fast_retry_backoff(request, monkeypatch):
     """Short-circuit retry backoff for all tests in this directory.
 

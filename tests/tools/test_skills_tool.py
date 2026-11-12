@@ -1134,3 +1134,32 @@ class TestTrustWarningSymlinkAware:
             self._log("sym", root / "sym" / "SKILL.md", [root], root)
 
         assert "outside the trusted" in caplog.text, caplog.text
+
+
+class TestLinkedFilesRelativeResolution:
+    """D3: the skill_view result must teach how skill-relative paths resolve — a model that
+    read the skill via the tool (not a slash invocation) otherwise runs `scripts/...` from
+    the wrong cwd."""
+
+    def test_usage_hint_teaches_relative_resolution(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills_tool_module._SKILLS_CACHE.clear()
+            skill_dir = _make_skill(tmp_path, "with-files")
+            (skill_dir / "scripts").mkdir()
+            (skill_dir / "scripts" / "run.py").write_text("print('x')")
+            payload = json.loads(skill_view("with-files"))
+
+        assert payload["success"] is True
+        hint = payload["usage_hint"]
+        assert "skill_view(name, file_path)" in hint  # viewing guidance retained
+        assert "Resolve any relative paths in this skill" in hint
+        assert payload["skill_dir"] == str(skill_dir)
+
+    def test_no_linked_files_keeps_hint_empty(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills_tool_module._SKILLS_CACHE.clear()
+            _make_skill(tmp_path, "plain")
+            payload = json.loads(skill_view("plain"))
+
+        assert payload["success"] is True
+        assert payload["usage_hint"] is None
