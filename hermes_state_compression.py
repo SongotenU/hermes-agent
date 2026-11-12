@@ -618,6 +618,31 @@ class SessionCompressionMixin:
         if session_id:
             self._write_session_column("compression_overload_streak", session_id, max(0, int(streak)))
 
+    def get_compression_summary_meta(self, session_id: str) -> dict:
+        """Which provider/model wrote the latest accepted summary, with its usage
+        (DeepSeek Harness parity — readable without a live compressor). A missing
+        session, NULL, or malformed JSON reads as an empty dict."""
+        if not session_id:
+            return {}
+        row = self._read_one(
+            "SELECT compression_summary_meta FROM sessions WHERE id = ?", (session_id,)
+        )
+        if not row or not row[0]:
+            return {}
+        try:
+            meta = json.loads(row[0])
+        except (TypeError, ValueError):
+            return {}
+        return meta if isinstance(meta, dict) else {}
+
+    def set_compression_summary_meta(self, session_id: str, meta: dict) -> None:
+        """Persist the latest summary-call metadata (JSON); ``None``/empty clears."""
+        if session_id:
+            self._write_session_column(
+                "compression_summary_meta", session_id,
+                json.dumps(meta, sort_keys=True) if meta else None,
+            )
+
     def increment_compression_overload_streak(self, session_id: str) -> Optional[int]:
         """Atomically bump the overload streak and return the new value (None when no row).
         One UPDATE ... RETURNING, so concurrent agents on one session cannot lose a strike."""

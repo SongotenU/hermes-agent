@@ -141,6 +141,14 @@ def run_turn_start_compaction(
     return out
 
 
+def _prompt_cache_never_expires(agent: Any) -> bool:
+    """Routes whose provider-side prompt cache never expires (logged-in OpenAI Codex
+    accounts served through ``codex_responses``): compacting while idle only discards a
+    warm cache, so idle compaction must not fire there (oh-my-pi ``promptCachePersistent``
+    parity)."""
+    return getattr(agent, "api_mode", None) == "codex_responses"
+
+
 def _idle_compaction(
     agent: Any, out: CompactionOutcome, system_message: Optional[str], user_message: Any,
     effective_task_id: str,
@@ -178,10 +186,12 @@ def _idle_compaction(
     _idle_last_compaction = getattr(_compressor, "last_compression_rough_tokens", 0)
     if not isinstance(_idle_last_compaction, int) or isinstance(_idle_last_compaction, bool):
         _idle_last_compaction = 0
+    _idle_cache_persistent = _prompt_cache_never_expires(agent)
     if not _tc._should_idle_compact(
         enabled=agent.compression_enabled, idle_after_seconds=_idle_after,
         idle_gap_seconds=_idle_gap, tokens=_idle_tokens, floor_tokens=_idle_floor,
         cooldown_active=bool(_idle_cooldown), last_compaction_tokens=_idle_last_compaction,
+        prompt_cache_persistent=_idle_cache_persistent,
     ):
         return
     logger.info(

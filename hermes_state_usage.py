@@ -453,6 +453,21 @@ class SessionUsageMixin:
         )
         return {row["task"]: {k: row[k] for k in row.keys() if k != "task"} for row in rows}
 
+    def usage_since(self, since_ts: float) -> dict[str, float]:
+        """Tokens and spend for sessions STARTED at/after *since_ts* (one scan).
+
+        Unlike ``usage_totals`` this is a spend meter, not the sidebar: child/subagent rows and
+        archived sessions ARE included (a turn that happened must count). Attribution follows the
+        session's start timestamp — the counters on that row are cumulative across resumes.
+        """
+        row = self._read_one("""
+            SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0),
+                   COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0)
+              FROM sessions
+             WHERE started_at >= ?
+            """, [float(since_ts)])
+        return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
+
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
         shrink with paging. Spend prefers the billed figure over the estimate."""
