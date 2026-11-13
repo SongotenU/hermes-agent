@@ -26,6 +26,19 @@ _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
 
+def light_chat_parser():
+    """Top-level + chat parser only (no subcommand tree); chat dispatches to cmd_chat.
+
+    Split from ``hermes_cli/main.py`` (file-size ratchet); late-imports the handler so
+    ``main`` stays the owner of ``cmd_chat`` without an import cycle at module load.
+    """
+    from hermes_cli.main import cmd_chat
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=cmd_chat)
+    return parser
+
+
 def _cfg_path() -> str:
     """``~/.hermes/config.yaml`` spelled for the active profile, for help text.
 
