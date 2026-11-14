@@ -140,6 +140,11 @@ def _fake_agent(stall_guards=True):
             )
         )
     )
+    agent._observe_blocked = (
+        lambda name, args, result, tool_call_id="": AIAgent._observe_blocked_call(
+            agent, name, args, result, tool_call_id=tool_call_id
+        )
+    )
     return agent
 
 
@@ -485,3 +490,78 @@ def test_promoted_reasoning_detector_ignores_thai_stated_answers():
         "พรุ่งนี้จะฝนตกทั่วประเทศ",  # "tomorrow it will rain" — not a first-person action verb
     ):
         assert not promoted_reasoning_announces_action(text), text
+
+
+# ── blocked calls feed the identical-call guard (DSH guard invariant) ──────
+# A blocked call never ran, but a model hammering the same denied call is exactly the
+# loop worth breaking: the deterministic blocked result must reach the identical-call
+# counters — never failure bookkeeping, never the result stub.
+
+_DENIED = "BLOCKED: this action is not permitted here. Do NOT retry."
+
+
+def _enable_hard_stop(controller):
+    from dataclasses import replace
+
+    controller.config = replace(controller.config, hard_stop_enabled=True)
+
+
+def test_blocked_call_hammering_escalates_to_halt():
+    agent = _fake_agent()
+    _enable_hard_stop(agent._tool_guardrails)
+    args = {"command": "elevate-privileges"}
+
+    for _ in range(2):
+        out = agent._observe_blocked("terminal", args, _DENIED)
+        assert "hermes note" not in out
+    out3 = agent._observe_blocked("terminal", args, _DENIED)
+    assert "hermes note" in out3  # notice at the 3rd consecutive identical block
+    assert out3.startswith(_DENIED)  # block message preserved
+
+    for _ in range(2):  # 4th, 5th -> hard stop at no_progress_block_after
+        agent._observe_blocked("terminal", args, _DENIED)
+    halt = agent._tool_guardrail_halt_decision
+    assert halt is not None
+    assert halt.code == "identical_call_streak_halt"
+
+
+def test_blocked_calls_with_changing_args_never_escalate():
+    agent = _fake_agent()
+    _enable_hard_stop(agent._tool_guardrails)
+    for i in range(8):
+        agent._observe_blocked("terminal", {"command": f"attempt-{i}"}, _DENIED)
+    assert agent._tool_guardrail_halt_decision is None  # varied retries are diagnosis, not a loop
+
+
+def test_blocked_result_is_never_stubbed():
+    agent = _fake_agent()
+    big_block = "BLOCKED: " + "x" * IDENTICAL_RESULT_STUB_MIN_CHARS
+    args = {"command": "elevate-privileges"}
+    first = agent._observe_blocked("terminal", args, big_block)
+    second = agent._observe_blocked("terminal", args, big_block)
+    assert first == big_block
+    assert second == big_block  # blocked results stay whole: no byte-identical stub
+
+
+# ── bookkeeping tools are transparent to the chains (DSH guard invariant) ──
+
+
+def test_bookkeeping_tool_is_transparent_to_the_identical_streak():
+    c = ToolCallGuardrailController()
+    args = {"path": "/a"}
+    assert c.observe_call("read_file", args, "data").notice is None  # 1st
+    assert c.observe_call("read_file", args, "data").notice is None  # 2nd
+    # An interleaved todo update must neither reset nor join the read streak.
+    assert c.observe_call("todo_list", {"action": "add", "text": "x"}, "added").notice is None
+    third = c.observe_call("read_file", args, "data")  # 3rd read
+    assert third.notice is not None
+    assert "3rd" in third.notice  # the streak saw three reads, not one (reset) or two
+
+
+def test_bookkeeping_tool_own_repeats_stay_unflagged():
+    c = ToolCallGuardrailController()
+    _enable_hard_stop(c)
+    for _ in range(6):
+        obs = c.observe_call("todo_list", {"action": "list"}, "same list")
+        assert obs.notice is None and obs.stub is None
+    assert c.halt_decision is None
