@@ -6,11 +6,14 @@ must never import that module at module level (import cycle).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
 from agent.model_metadata import estimate_messages_tokens_rough
 from agent.model_metadata_token_memo import forget_message_token_memo
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_int(value: Any) -> int | None:
@@ -21,8 +24,39 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
+def summary_usage_dict(response: Any) -> dict[str, int]:
+    """Usage fields of a summary response as a plain dict (object or dict shape).
+
+    Feeds the durable summary metadata (DeepSeek Harness parity: know which
+    route wrote the latest summary and what it cost). Content-free."""
+    usage = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
+    if usage is None:
+        return {}
+    out: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = usage.get(key) if isinstance(usage, dict) else getattr(usage, key, None)
+        value = _safe_int(value)
+        if value is not None:
+            out[key] = value
+    return out
+
+
 class CompressionTelemetryMixin:
     """Per-attempt telemetry dict: seeded at attempt start, filled by each compression phase."""
+
+    def _record_summary_meta(self) -> None:
+        """Persist provider/model/usage of the latest summary LLM call on the session
+        record (DeepSeek Harness parity). Reads ``_last_summary_call_meta`` captured in
+        ``_call_summary_llm``; called only after the acceptance gates pass. Best-effort:
+        metadata must never fail a pass."""
+        meta = getattr(self, "_last_summary_call_meta", None)
+        if not meta:
+            return
+        try:
+            self._durable_write("set_compression_summary_meta", "compression summary meta", dict(meta))
+        except Exception:
+            # Best-effort observability: metadata must never fail a compression pass.
+            logger.exception("summary metadata persist failed (session=%s)", getattr(self, "session_id", ""))
 
     def _begin_compression_telemetry(
         self, *, current_tokens: int | None, attempt_id: str | None = None, session_id: str | None = None,

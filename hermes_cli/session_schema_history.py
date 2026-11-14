@@ -215,6 +215,13 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         )),
         # GW-18 (package 10, #140968): write-side revision a transcript-derived cache keys on.
         ('32 2026-10-18T10:11Z 1fc1999769', (('+', 'transcript_revision', 'tool_names'),)),
+        # Fork patch (compaction pipeline B1-B5/B9/B15): the summary metadata the fork records per
+        # compaction. Declared mid-definition in SCHEMA_SQL, so a store created by the fork carries
+        # it after compression_overload_streak; a store upgraded from an older snapshot still gets
+        # it appended at the end by _reconcile_columns, which reachable_physical_layouts covers.
+        ('33 2026-10-22T12:22Z 694446c838', (
+            ('+', 'compression_summary_meta', 'compression_overload_streak'),
+        )),
         ),
     ),
     "messages": _TableHistory(
