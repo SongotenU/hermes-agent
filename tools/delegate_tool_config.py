@@ -41,6 +41,9 @@ def _cfg() -> dict:
 # callback via ThreadPoolExecutor(initializer=...): deny by default, approve when
 # delegation.subagent_auto_approve is true. Both warn for audit. Gateway sessions
 # are unaffected (they resolve approvals via tools/approval.py's per-session queue).
+# delegation.subagent_approval ("inherit" | "deny" | "approve") overrides this for
+# EVERY surface: "deny"/"approve" decide before any prompt (approval.py checks the
+# policy for subagent-originated gates); "inherit" keeps the per-surface default.
 def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
     """Auto-deny (safe default): returns 'deny' so the child sees a recoverable refusal."""
     logger.warning(
@@ -55,7 +58,17 @@ def _subagent_auto_approve(command: str, description: str, **kwargs) -> str:
     return "once"
 
 def _get_subagent_approval_callback():
-    """Callback for subagent worker threads per delegation.subagent_auto_approve (default False)."""
+    """Callback for subagent worker threads.
+
+    ``delegation.subagent_approval`` wins when set: "deny"/"approve" apply on every surface
+    (approval.py also settles gateway gates from the policy before prompting). Otherwise the
+    legacy ``delegation.subagent_auto_approve`` (default False → deny)."""
+    from tools.approval_context import subagent_approval_policy
+    policy = subagent_approval_policy()
+    if policy == "approve":
+        return _subagent_auto_approve
+    if policy == "deny":
+        return _subagent_auto_deny
     if is_truthy_value(_cfg().get("subagent_auto_approve", False)):
         return _subagent_auto_approve
     return _subagent_auto_deny
