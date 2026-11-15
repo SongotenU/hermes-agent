@@ -346,7 +346,10 @@ class TestProviderOverflowBypassesCooldown:
 
         def fake_call_llm(**kwargs):
             calls.append(kwargs)
-            return _summary_response("## Goal\nRecovered after overflow.")
+            return _summary_response(
+                "## Goal\nRecovered after overflow.\n"
+                + "Additional context retained for the summary fixture. " * 16
+            )
 
         # Bulky turns so the compacted transcript is genuinely smaller.
         live = [
