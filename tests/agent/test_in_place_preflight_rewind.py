@@ -14,7 +14,11 @@ from agent.conversation_compression_manual import compress_now, parse_compress_a
 
 
 def _aux_llm(**kwargs):
-    text = "## Goal\nNumbered steps.\n## Progress\nEarly ones done." if kwargs.get("task") == "compression" else "Title"
+    text = (
+        "## Goal\nNumbered steps.\n## Progress\nEarly ones done.\n"
+        # Grow past the degenerate-summary gate's size-scaled floor; assertions search substrings.
+        + "Additional context retained for the summary fixture. " * 16
+    ) if kwargs.get("task") == "compression" else "Title"
     message = SimpleNamespace(content=text, tool_calls=None)
     return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")], model="aux", usage=None)
 
