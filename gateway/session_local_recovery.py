@@ -231,6 +231,9 @@ def restore_local_session(authority, sid):
             if current is None:
                 # A route the loaded store cannot see (an older release's scope, a pruned row) is the
                 # receipt's to rebuild, as on a cold restore: refusing wedges every claim until a restart.
+                logging.getLogger(__name__).warning(
+                    'Local route for %s lost its routing entry while live; rebuilding it from the receipt',
+                    sid)
                 entry.origin = source
                 store._entries[route] = entry
             elif (current.session_id not in receipt.get('lineage', [sid])
