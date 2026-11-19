@@ -12,6 +12,9 @@ CLI, gateway, non-interactive, and kanban-worker sessions. Launching outside an
 active agent turn fails closed with `No active Hermes parent session`.
 The facade also works when a plugin runs under `plugins.isolation: host`.
 
+Coordination rules (when to spawn vs. continue, synthesizing results, fresh-eyes
+verifiers): [coordination-doctrine.md](coordination-doctrine.md).
+
 Requests accept `goal`, `context`, `role`, `model`, `provider`, `allowed_toolsets`,
 `blocked_tools`, `working_directory`, `parent_session_id`, `correlation_id`,
 `metadata`, and `timeout_seconds`, subject to the restrictions below.

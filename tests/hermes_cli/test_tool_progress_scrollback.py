@@ -184,3 +184,37 @@ class TestMoAReferenceBlocks:
         assert "aggregating" in cli._spinner_text
         # aggregating is a spinner-only transition; no committed scrollback line.
         mock_print.assert_not_called()
+
+
+class TestToolSubcallSpinner:
+    """tool.subcall (a sandbox sub-call of execute_code) is transient chrome: it names
+    the activity on the spinner while the script keeps running and commits nothing."""
+
+    def test_subcall_updates_spinner_only(self):
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "tool.subcall", "web_search", "query='x'", None,
+                parent="execute_code", duration=0.42, error=None,
+            )
+        assert "execute_code" in cli._spinner_text
+        assert "web_search" in cli._spinner_text
+        assert "(0.4s)" in cli._spinner_text
+        mock_print.assert_not_called()
+
+    def test_subcall_error_still_names_the_call(self):
+        cli = _make_cli(tool_progress="off")
+        cli._on_tool_progress(
+            "tool.subcall", "terminal", "cmd", None,
+            parent="execute_code", duration=1.0, error="exit 1",
+        )
+        assert "terminal" in cli._spinner_text
+
+    def test_private_helper_calls_are_not_named(self):
+        cli = _make_cli()
+        before = cli._spinner_text
+        cli._on_tool_progress(
+            "tool.subcall", "_internal_helper", "x", None,
+            parent="execute_code", duration=0.1, error=None,
+        )
+        assert cli._spinner_text == before
