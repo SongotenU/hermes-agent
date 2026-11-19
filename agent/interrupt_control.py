@@ -97,7 +97,27 @@ def _steer_parts(agent) -> list:
     return list(parts)
 
 
+# Bounds for the pending-steer buffer (Grok `xai-interjection-core` parity: push_capped).
+# A spamming client must not grow agent memory without bound between tool batches.
+STEER_QUEUE_MAX_ENTRIES = 50
+STEER_ENTRY_MAX_CHARS = 25_000
+_STEER_TRUNCATION_SUFFIX = "\n… [steer truncated]"
+
+
+def _cap_steer_parts(parts: list) -> list:
+    """Keep the newest ``STEER_QUEUE_MAX_ENTRIES`` steer parts and truncate each to
+    ``STEER_ENTRY_MAX_CHARS``; applied at the single write seam (``_set_steer_parts``)
+    so every producer (steer, requeue, direct buffer writers) is bounded."""
+    capped = []
+    for ticket, text in parts:
+        if isinstance(text, str) and len(text) > STEER_ENTRY_MAX_CHARS:
+            text = text[:STEER_ENTRY_MAX_CHARS] + _STEER_TRUNCATION_SUFFIX
+        capped.append((ticket, text))
+    return capped[-STEER_QUEUE_MAX_ENTRIES:]
+
+
 def _set_steer_parts(agent, parts: list) -> None:
+    parts = _cap_steer_parts(parts)
     agent._pending_steer_parts = parts
     agent._pending_steer = "\n".join(text for _, text in parts) or None
 
