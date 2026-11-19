@@ -54,6 +54,30 @@ def _inactivity_watchdog_loop(
     return False
 
 
+def token_budget_loop(
+    *, tokens_used: Callable[[], int], limit_tokens: int, poll_s: float, stop: threading.Event,
+    future_done: Callable[[], bool],
+) -> bool:
+    """Poll a run's cumulative token spend until *limit_tokens* (-> True), stop, or the future
+    completes (-> False).
+
+    Same driver as the inactivity watchdog: ``threading.Event.wait`` (a kernel timeout), so a
+    blocked event loop / ``run_job`` thread cannot disable it. ``tokens_used`` is expected to be
+    the DELTA since the fire started (a resumed session's preloaded counters must not count
+    against a per-run cap) — the caller snapshots ``agent.session_total_tokens`` before the run.
+    """
+    while not stop.wait(poll_s):
+        if future_done():
+            return False
+        try:
+            used = int(tokens_used() or 0)
+        except Exception:
+            used = 0
+        if used >= limit_tokens:
+            return True
+    return False
+
+
 class ExecutionProgressStamper:
     def __init__(
         self, execution_id: str, job_name: str, *, idle_seconds: Callable[[], float],
