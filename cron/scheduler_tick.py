@@ -165,6 +165,14 @@ def _tick_admitted(
             _sched._sweep_mcp_orphans()
             return 0
 
+        # Routine gate (opt-in): refuse — not queue — a due occurrence when the profile is busy
+        # or a recurring job ran within cron.min_interval_seconds. The advance above already
+        # consumed the occurrence, so at-most-once is untouched; the gate settles the ledger row.
+        due_jobs = _sched._apply_routine_gate(due_jobs)
+        if not due_jobs:
+            _sched._sweep_mcp_orphans()
+            return 0
+
         _max_workers = _sched._resolve_max_parallel_workers()
         if verbose:
             _sched.logger.info(
