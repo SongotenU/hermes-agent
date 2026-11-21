@@ -285,7 +285,9 @@ def begin_loop_aux_attempt(agent: Any, api_kwargs: dict[str, Any], api_request_i
     normal agent. An attempt still open here failed without a response (provider error, retry):
     its pair is closed first."""
     identity = getattr(agent, "_loop_aux_task", None)
-    if not identity:
+    # A MagicMock (test double) or a half-written task state is truthy but not an
+    # identity pair; treat it as "no auxiliary work" instead of crashing the turn.
+    if not isinstance(identity, (tuple, list)) or len(identity) != 2:
         return False
     end_loop_aux_attempt(agent, error=ConnectionError("attempt ended without a response"))
     aux_task, metadata = identity
