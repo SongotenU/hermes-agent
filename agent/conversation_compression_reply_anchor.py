@@ -145,7 +145,7 @@ def _same_visible_content(left: dict, right: dict, right_text: str) -> bool:
     ``left`` is the per-candidate row and is flattened here; ``right_text`` is the
     caller's row flattened once per scan rather than once per candidate.
     """
-    from agent.conversation_compression import _message_text
+    from agent.conversation_compression_steer import _message_text
 
     left_text = _message_text(left).strip()
     if left_text or right_text:
@@ -204,7 +204,8 @@ def _reply_insertion_index(followers: list, compressed: list, *, reused_ids: fro
     real followers; when none locates the slot and a reused-id round survives in
     ``compressed``, the placement is unknown and ``None`` is returned (skip).
     """
-    from agent.conversation_compression import _is_real_user_message, _message_text
+    from agent.conversation_compression import _is_real_user_message
+    from agent.conversation_compression_steer import _message_text
 
     def _row_ids(message: dict) -> frozenset:
         return _tool_call_ids(message) | frozenset(filter(None, (_tool_result_id(message),)))

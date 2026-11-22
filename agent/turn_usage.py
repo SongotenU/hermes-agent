@@ -253,6 +253,16 @@ def record_response_usage(
     with session_totals_lock(agent):  # a keep-alive reply landing now adds to these too
         add_session_usage(agent, canonical_usage, prompt_tokens=prompt_tokens,
                           completion_tokens=completion_tokens, total_tokens=total_tokens)
+        # Continuation-budget per-turn accumulator (my-patches): the loop installs
+        # a sink state (with ``turn_completion_tokens``) for this turn; consumed by
+        # the diminishing-returns check on each continuation nudge. Keep-alive
+        # replies don't reach this call site, so only conversation tokens count.
+        _sink = getattr(agent, "_turn_completion_sink", None)
+        if _sink is not None:
+            try:
+                _sink.turn_completion_tokens += completion_tokens
+            except AttributeError:
+                pass
     # Rolling history for status-bar averages (last 10).
     with suppress(Exception):
         hist = getattr(agent, "_api_latency_history", None)
