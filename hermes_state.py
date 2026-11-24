@@ -331,6 +331,18 @@ class _SessionDB:
         return None if record is None else record.as_session_row()
 
     @_held
+    def usage_since(self, since_ts: "float") -> "dict[str, Any]":
+        return self._store.usage.usage_since(since_ts)
+
+    @_held
+    def get_compression_summary_meta(self, session_id: "str") -> "dict[str, Any]":
+        return self._store.lineage.compression_summary_meta(session_id)
+
+    @_held
+    def set_compression_summary_meta(self, session_id: "str", meta: "dict[str, Any]") -> None:
+        self._store.lineage.set_compression_summary_meta(session_id, meta)
+
+    @_held
     def list_sessions_rich(
         self, source: "Optional[str]" = None, sources: "Optional[list[str]]" = None,
         exclude_sources: "Optional[list[str]]" = None, cwd_prefix: "Optional[str]" = None, limit: "int" = 20,

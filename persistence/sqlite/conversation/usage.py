@@ -15,7 +15,7 @@ from .._holder import StoreHolder, set_token_delta_applier
 from ._store.sessions import get_recent_session_model_route
 from ._store.usage import (
     auxiliary_usage_by_task, get_prompt_cache_clock, prompt_cache_generation, record_auxiliary_usage,
-    update_session_billing_route, update_token_counts, usage_totals,
+    update_session_billing_route, update_token_counts, usage_since, usage_totals,
 )
 from ._errors import refusals
 
@@ -93,6 +93,11 @@ class SQLiteUsageRepository:
             model=row["model"], billing_provider=row["billing_provider"] or None,
             billing_base_url=row["billing_base_url"] or None, billing_mode=row["billing_mode"] or None)
         return RouteUsage(route=route, api_call_count=int(row["api_call_count"] or 0))
+
+    def usage_since(self, since_ts: float) -> dict[str, float]:
+        holder = self._store.holder()
+        with refusals(holder):
+            return usage_since(holder, since_ts)
 
     def usage_totals(self, query: UsageTotalsQuery = UsageTotalsQuery()) -> UsageTotals:
         holder = self._store.holder()

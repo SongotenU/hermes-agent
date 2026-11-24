@@ -20,11 +20,13 @@ logger = logging.getLogger("agent.context_compressor")
 # The storage interface verb each durable per-session read or write runs on a writer handle: (repository, verb).
 _DURABLE_VERBS = {
     "get_compression_fallback_streak": ("lineage", "compression_fallback_streak"),
+    "get_compression_summary_meta": ("lineage", "compression_summary_meta"),
     "get_compression_ineffective_count": ("lineage", "compression_ineffective_count"),
     "get_compression_overload_streak": ("lineage", "compression_overload_streak"),
     "get_compression_recovery_deadline": ("lineage", "compression_recovery_deadline"),
     "increment_compression_overload_streak": ("lineage", "increment_compression_overload_streak"),
     "set_compression_fallback_streak": ("lineage", "set_compression_fallback_streak"),
+    "set_compression_summary_meta": ("lineage", "set_compression_summary_meta"),
     "set_compression_ineffective_count": ("lineage", "set_compression_ineffective_count"),
     "set_compression_overload_streak": ("lineage", "set_compression_overload_streak"),
     "set_compression_recovery_deadline": ("lineage", "set_compression_recovery_deadline"),
