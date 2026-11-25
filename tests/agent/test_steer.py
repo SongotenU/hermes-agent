@@ -559,6 +559,7 @@ class TestSteerThreadSafety:
     def test_concurrent_steer_calls_preserve_all_text(self):
         agent = _bare_agent()
         N = 200
+        from agent.interrupt_control import STEER_QUEUE_MAX_ENTRIES
 
         def worker(idx: int) -> None:
             agent.steer(f"note-{idx}")
@@ -571,10 +572,14 @@ class TestSteerThreadSafety:
 
         text = agent._drain_pending_steer()
         assert text is not None
-        # Every single note must be preserved — none dropped by the lock.
+        # The buffer is BOUNDED (Grok push_capped parity): the lock still serialises
+        # every append — no torn or duplicated notes — while drop-oldest keeps the
+        # newest STEER_QUEUE_MAX_ENTRIES submissions.
         lines = text.split("\n")
-        assert len(lines) == N
-        assert set(lines) == {f"note-{i}" for i in range(N)}
+        assert len(lines) == STEER_QUEUE_MAX_ENTRIES
+        assert len(set(lines)) == len(lines)  # no duplicates from the race
+        idxs = [int(line.split("-")[1]) for line in lines]
+        assert idxs == sorted(idxs)  # insertion order preserved for survivors
 
 
 class TestSteerClearedOnInterrupt:
@@ -769,6 +774,22 @@ class TestSteerMarkerContract:
         emitted = format_steer_marker("hi")
         assert STEER_MARKER_OPEN in emitted and STEER_MARKER_CLOSE in emitted
         assert STEER_MARKER_OPEN in STEER_CHANNEL_NOTE and STEER_MARKER_CLOSE in STEER_CHANNEL_NOTE
+
+    def test_midturn_priority_trailer_orders_the_reply_before_resumed_work(self):
+        """A delivered steer must order the model: answer the user first, then
+        finish unfinished tasks from previous turns (ported from xai-org/grok-build's
+        interjection framing, UNFINISHED_TASKS_REMINDER). Without it a mid-turn
+        steer can be silently skipped while the model finishes the old task."""
+        from agent.prompt_builder import STEER_MARKER_CLOSE, STEER_PRIORITY_NOTE
+
+        emitted = format_steer_marker("stop and fix the test first")
+        assert STEER_PRIORITY_NOTE in emitted
+        # Inside the trusted envelope: after the steer text, before the close marker.
+        assert (
+            emitted.index("stop and fix the test first")
+            < emitted.index(STEER_PRIORITY_NOTE)
+            < emitted.index(STEER_MARKER_CLOSE)
+        )
 
 
 

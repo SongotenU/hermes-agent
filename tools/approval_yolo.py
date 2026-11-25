@@ -12,6 +12,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from tools import approval
+from tools import approval_context
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,12 @@ def toggle_session_yolo(session_key: str, enabled: Optional[bool] = None, *, per
     """
     if enabled is None:
         enabled = not (persisted or approval.is_session_yolo_enabled(session_key))
+    if enabled and not approval_context.session_yolo_allowed():
+        # Refuse loudly and persist OFF, so lifting the cap later never revives a bypass the user
+        # was told was unavailable.
+        logger.warning("session yolo refused for %s: the managed policy caps approvals at %r",
+                       session_key, approval_context._managed_approvals_cap())
+        enabled = False
     _persist(persist, enabled, session_key)
     (approval.enable_session_yolo if enabled else approval.disable_session_yolo)(session_key)
     return enabled

@@ -547,6 +547,33 @@ def _write_session_column(holder: StoreHolder, column: str, session_id: str, val
     holder._write_sql(f"UPDATE sessions SET {column} = ? WHERE id = ?", (value, session_id))
 
 
+def get_compression_summary_meta(holder: StoreHolder, session_id: str) -> dict:
+    """Which provider/model wrote the latest accepted summary, with its usage
+    (DeepSeek Harness parity — readable without a live compressor). A missing
+    session, NULL, or malformed JSON reads as an empty dict."""
+    if not session_id:
+        return {}
+    row = holder._read_one(
+        "SELECT compression_summary_meta FROM sessions WHERE id = ?", (session_id,)
+    )
+    if not row or not row[0]:
+        return {}
+    try:
+        meta = json.loads(row[0])
+    except (TypeError, ValueError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def set_compression_summary_meta(holder: StoreHolder, session_id: str, meta: dict) -> None:
+    """Persist the latest summary-call metadata (JSON); ``None``/empty clears."""
+    if session_id:
+        _write_session_column(
+            holder, "compression_summary_meta", session_id,
+            json.dumps(meta, sort_keys=True) if meta else None,
+        )
+
+
 def get_compression_fallback_streak(holder: StoreHolder, session_id: str) -> int:
     """Return the persisted deterministic-fallback streak."""
     return _read_session_number(holder, "compression_fallback_streak", session_id, int, 0)

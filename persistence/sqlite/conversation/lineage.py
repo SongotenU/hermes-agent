@@ -15,9 +15,11 @@ from .._backend import SQLiteStore, register_repository
 from ._store.compression import (
     finalize_orphaned_compression_sessions, get_compression_chain, get_compression_fallback_streak,
     get_compression_ineffective_count, get_compression_lineage, get_compression_overload_streak,
-    get_compression_recovery_deadline, get_compression_tip, get_tool_rotation_root, increment_compression_overload_streak,
+    get_compression_recovery_deadline, get_compression_tip, get_compression_summary_meta,
+    get_tool_rotation_root, increment_compression_overload_streak,
     publish_compression_child, reopen_orphaned_compression_session, set_compression_fallback_streak,
     set_compression_ineffective_count, set_compression_overload_streak, set_compression_recovery_deadline,
+    set_compression_summary_meta,
     stamp_legacy_compression_chains, _is_compression_child_row,
 )
 from ._store.messages import (
@@ -90,6 +92,16 @@ class SQLiteLineageRepository:
         holder = self._store.holder()
         with refusals(holder, session_id):
             set_compression_fallback_streak(holder, session_id, value)
+
+    def compression_summary_meta(self, session_id: SessionId) -> dict:
+        holder = self._store.holder()
+        with refusals(holder, session_id):
+            return get_compression_summary_meta(holder, session_id)
+
+    def set_compression_summary_meta(self, session_id: SessionId, meta: dict) -> None:
+        holder = self._store.holder()
+        with refusals(holder, session_id):
+            set_compression_summary_meta(holder, session_id, meta)
 
     def set_compression_ineffective_count(self, session_id: SessionId, value: int) -> None:
         holder = self._store.holder()

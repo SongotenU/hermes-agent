@@ -217,6 +217,16 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         ('32 2026-10-18T10:11Z 1fc1999769', (('+', 'transcript_revision', 'tool_names'),)),
         # Last prompt-cache event (agent/prompt_cache_clock.py), JSON; written with the token batch.
         ('33 2026-11-15T12:00Z feat/prompt-cache-clock', (('+', 'prompt_cache_clock', 'transcript_revision'),)),
+        # Fork patch (compaction pipeline B1-B5/B9/B15): the summary metadata the fork records per
+        # compaction. Declared mid-definition in SCHEMA_SQL, so a store created by the fork carries
+        # it after compression_overload_streak; a store upgraded from an older snapshot still gets
+        # it appended at the end by _reconcile_columns, which reachable_physical_layouts covers.
+        # Sequenced after upstream's 33 (both releases added a "33"; upstream's number is kept and
+        # this fork event moves to 34 — the two insertions have different predecessors, so the
+        # resulting declared order is the same either way).
+        ('34 2026-10-22T12:22Z 694446c838', (
+            ('+', 'compression_summary_meta', 'compression_overload_streak'),
+        )),
         ),
     ),
     "messages": _TableHistory(

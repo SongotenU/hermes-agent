@@ -30,6 +30,15 @@ Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-refer
 
 Hermes interacts with Claude Code in two fundamentally different ways. Choose based on the task.
 
+### Context handoff — the prompt is the artifact
+
+Claude Code never sees the Hermes conversation. Before delegating, write the prompt as an explicit
+handoff summary, not as pasted history: goal + hard constraints, decisions already made, files
+touched (paths, not diffs), commands/tests run and their verdicts, open failures, pending
+questions. Reference `@path` for files instead of inlining them. On a second delegation to the
+same workdir, send only the delta since the last handoff. Contract and checklist:
+`website/docs/developer-guide/context-handoff.md`.
+
 ### Mode 1: Print Mode (`-p`) — Non-Interactive (PREFERRED for most tasks)
 
 Print mode runs a one-shot task, returns the result, and exits. No PTY needed. No interactive prompts. This is the cleanest integration path.

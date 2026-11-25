@@ -26,6 +26,41 @@ def describe_compression_lock_skip(lock_signal: Any) -> str:
     )
 
 
+#: Failure-taxonomy copy (see ``classify_compress_failure``): one line per code, all
+#: stating the same invariant — a failed manual compression leaves the conversation
+#: unchanged.
+_COMPRESSION_FAILURE_COPY = {
+    "changed": (
+        "⚠️ Compression didn't run: the conversation changed while it was starting "
+        "(history was rewritten or went stale). Nothing was compressed — try again."
+    ),
+    "cancelled": (
+        "⚠️ Compression was cancelled — the conversation is unchanged."
+    ),
+    "checkpoint": (
+        "⚠️ Compression didn't run: the pre-compression checkpoint could not be written. "
+        "The conversation is unchanged."
+    ),
+    "persistence": (
+        "⚠️ Compression couldn't be saved (session store unavailable) — the conversation is unchanged."
+    ),
+}
+
+
+def describe_compression_failure(kind: str, message: str = "") -> str:
+    """User-facing text for a failed manual /compress (``kind`` from
+    ``agent.conversation_compression_manual.classify_compress_failure``).
+
+    A classified kind renders its fixed copy; ``unknown`` keeps the raw message so the
+    failure stays diagnosable instead of vanishing behind generic wording.
+    """
+    copy = _COMPRESSION_FAILURE_COPY.get(kind)
+    if copy:
+        return copy
+    detail = f" ({message})" if message else ""
+    return f"⚠️ Compression failed{detail} — the conversation is unchanged."
+
+
 def summarize_manual_compression(
     before_messages: Sequence[dict[str, Any]],
     after_messages: Sequence[dict[str, Any]],
