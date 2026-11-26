@@ -1416,6 +1416,27 @@ A rate limit that names its reset (`Retry-After` or a `retry_after` body field) 
 
 `agent.auto_recovery_cycles` is the safety net *after* both the retries and the fallback chain are spent. When the failure is a transient outage (HTTP 5xx, an `overloaded`/529 response, a connect or read timeout) and no answer text has reached you yet, Hermes does not end the turn with "API failed after N retries" — it waits and tries again, up to this many cycles (default `5`), with a jittered 15/30/60/60/60 s schedule. A provider `Retry-After` header wins over the schedule (honoured up to 120 s). Every surface shows the same line while it waits — `⏳ Provider temporarily unavailable — retrying automatically in 30s (cycle 2/5); press Esc to stop` on the CLI/TUI/Desktop, a status bubble on messaging platforms (`send /stop to cancel`), a `hermes.status` SSE event on the API server, and a log line for cron jobs. Pressing Esc (or `/stop`) cancels the wait immediately. Fallback still comes first: with a fallback chain configured, exhaustion moves to the next provider as before, and the ladder only engages once the chain has nothing left. Authentication, billing, request-format, entitlement, content-policy and account-policy errors never enter the ladder. Set `0` to disable it.
 
+## Advisor Continuation and System Updates
+
+The advisor can turn a final answer that still leaves actionable todos into one bounded continuation, so Hermes finishes its own plan instead of stopping mid-task. The todo producer raises a `concern`; an explicit user interrupt is always respected.
+
+```yaml
+agent:
+  advisor_continue_on_todos: true   # false disables the built-in todo producer
+  advisor_continue_severity: concern # nit | concern | blocker
+```
+
+`agent.advisor_continue_severity` is the minimum severity that may wake one continuation after a terminal answer. The default is `concern`; `nit` is more aggressive and `blocker` is more conservative.
+
+Mid-session system-prompt updates normally wait for the next session to preserve the cached prefix. On routes that support an appended `system` row, this opt-in applies the update immediately without rebuilding that prefix:
+
+```yaml
+agent:
+  in_history_system_updates: false  # true enables tail-appended updates on capable routes
+```
+
+Only `chat_completions` routes use this path. Other routes keep the normal deferral behavior, and the cached history prefix is never rewritten.
+
 ## Wall-Clock Run Budget
 
 Separate from the iteration budget, you can give each conversation run an optional **wall-clock** budget. This is designed for one-shot and eval-harness invocations that run under a hard external ceiling (e.g. a 900-second per-task limit): without it, a run can time out with the work essentially done — one generation short of emitting the final answer, or stuck in a single hung provider call.
@@ -1437,6 +1458,20 @@ When a budget is set, two things happen:
 2. **Deadline-scaled stale timeouts.** Implicit non-streaming stale timeouts (the 90s default and the reasoning-model floors, e.g. 600s for DeepSeek reasoning models) are capped at `max(60, remaining_budget × 0.5)` so a single silently-hung provider call can never consume the rest of the run. The cap only ever *tightens* the timeout — it never raises it — and an explicitly configured `stale_timeout_seconds` (provider/model config or `HERMES_API_CALL_STALE_TIMEOUT`) always wins untouched.
 
 The budget is per `run_conversation` turn (it resets on each user message) and the feature is completely dormant when unset — no clock reads, no injection, no timeout changes.
+
+## Daily Token Budget (spend meter)
+
+`budget.daily_tokens` turns the token counters every session already writes into a "how much have I used **today**" line, shown by `/usage` on every surface (CLI, TUI, desktop, messaging) and by `hermes usage` (human block plus a `budget` key in `--json`).
+
+```yaml
+budget:
+  daily_tokens: 0        # 0 = no cap (today's usage still renders)
+  warn_percent: 80       # the /usage line turns ⚠ at/above this share of the cap
+```
+
+"Today" = sessions **started** since local midnight: `SUM(input_tokens + output_tokens)` and the billed-else-estimated cost across all sessions, child/subagent rows included. A session resumed across midnight counts on its start day — the counters on that row are cumulative.
+
+This is a **meter, not an enforcement gate**: it never blocks a run and never touches a prompt. The runaway-cost backstop is the cron per-fire cap (`cron.max_tokens_per_run`); a hard interactive block would make Hermes unusable mid-day. Scripts that want to act on the number can read `hermes usage --json` and branch on `budget.over`.
 
 ## Verify-on-Stop (coding verification)
 
@@ -2228,6 +2263,20 @@ providers:
 ```
 
 Differences from `agent.service_tier`: the tier is always on for that provider (no `auto`/`cold` window), `/fast` does not toggle it, and Hermes does not validate the value — the gateway decides what it accepts and what it bills.
+
+## Tool Callback Deadlines
+
+Tool callbacks can be bounded so a slow approval check or hook cannot hold a turn indefinitely. A per-tool `callback_deadline` overrides these global values; an unset value disables enforcement for that callback kind.
+
+```yaml
+tools:
+  callback_deadlines:
+    check_fn: 5.0    # approval/policy check callback, seconds
+    pre_hook: 10.0   # pre-tool hook, seconds
+    post_hook: 10.0  # post-tool hook, seconds
+```
+
+A timed-out callback is logged and treated as no callback result (fail-open); it does not fail the tool call. Set a value to `null` to disable that global deadline.
 
 ## Tool-Use Enforcement
 
@@ -3228,6 +3277,23 @@ Smart mode is particularly useful for reducing approval fatigue — it lets the 
 :::warning
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::
+
+### Managed approval cap (`approvals.max_mode`)
+
+A hosted install can cap how far approvals may be relaxed. Set it in the **managed scope**
+(`/etc/hermes/config.yaml`, or `HERMES_MANAGED_DIR`) — never in your own config, where it would only
+restrict yourself:
+
+```yaml
+approvals:
+  max_mode: manual   # off | smart | manual — the most relaxed mode anyone may use
+```
+
+The effective mode is the stricter of `approvals.mode` and the cap (`off` < `smart` < `manual`), and
+`/yolo` is refused while the cap is anything but `off` — YOLO bypasses every check, so it is more
+relaxed than `off`. An unrecognized `max_mode` caps at `manual`; with no managed scope the cap is
+absent and nothing changes. The operator's own `--yolo` launch flag is not capped: it is
+root-equivalent authority over the process.
 
 ### Denial circuit breaker
 

@@ -139,7 +139,7 @@ jobs:
       # checkout: no blobs (filter), no other files (sparse), but DO fetch
       # tags -- they are the whole input, and the default shallow checkout
       # has none.
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ inputs.commit }}
           filter: blob:none
@@ -207,7 +207,7 @@ jobs:
       windows-legs: ${{ steps.gen.outputs.windows-legs }}
       macos-legs: ${{ steps.gen.outputs.macos-legs }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ inputs.commit }}
           sparse-checkout: scripts/sandbox/generate-e2e-matrix.mjs
@@ -247,7 +247,7 @@ jobs:
       windows-arch: ${{ steps.inputs.outputs.windows-arch }}
       macos-arch: ${{ steps.inputs.outputs.macos-arch }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ inputs.commit }}
       # The repo's engines require the locked Node (>=26); the runner's system Node is older.
@@ -369,12 +369,12 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ inputs.commit }}
           sparse-checkout: tests/install/e2e-assets/playback.html
           sparse-checkout-cone-mode: false
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: install-e2e-player
           path: tests/install/e2e-assets/playback.html
@@ -439,7 +439,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ inputs.commit }}
           sparse-checkout: |

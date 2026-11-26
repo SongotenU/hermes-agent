@@ -39,9 +39,12 @@ def _make_messages(n_turns=30):
     return msgs
 
 
+_SUMMARY_PAD = "Additional context retained for the summary fixture. " * 16
+
+
 def _compress(cc, msgs):
     resp = MagicMock()
-    resp.choices[0].message.content = "## Active Task\nstuff"
+    resp.choices[0].message.content = "## Active Task\nstuff\n\n" + _SUMMARY_PAD
     with patch("agent.context_compressor.call_llm", return_value=resp):
         return cc.compress(msgs, current_tokens=100_000, force=True)
 
