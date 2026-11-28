@@ -144,6 +144,14 @@ def run_turn_start_compaction(
     return out
 
 
+def _prompt_cache_never_expires(agent: Any) -> bool:
+    """Routes whose provider-side prompt cache never expires (logged-in OpenAI Codex
+    accounts served through ``codex_responses``): compacting while idle only discards a
+    warm cache, so idle compaction must not fire there (oh-my-pi ``promptCachePersistent``
+    parity)."""
+    return getattr(agent, "api_mode", None) == "codex_responses"
+
+
 def idle_reference_timestamp(messages: list[Any], current_turn_user_idx: Optional[int]) -> Optional[float]:
     """Newest ``timestamp`` among the transcript rows that precede this turn's user message.
 
@@ -201,11 +209,13 @@ def idle_compaction_admission(
     last = getattr(_compressor, "last_compression_rough_tokens", 0)
     if not isinstance(last, int) or isinstance(last, bool):
         last = 0
+    _idle_cache_persistent = _prompt_cache_never_expires(agent)
     if not _tc._should_idle_compact(
         enabled=agent.compression_enabled,
         idle_after_seconds=getattr(agent, "compression_idle_compact_after_seconds", 0),
         idle_gap_seconds=idle_gap, tokens=tokens, floor_tokens=floor,
         cooldown_active=bool(cooldown), last_compaction_tokens=last,
+        prompt_cache_persistent=_idle_cache_persistent,
     ):
         return None
     return IdleAdmission(tokens=tokens, floor_tokens=floor, last_compaction_tokens=last)
